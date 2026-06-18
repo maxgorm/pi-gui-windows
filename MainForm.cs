@@ -120,10 +120,13 @@ internal sealed class MainForm : Form
         transcript.Dock = DockStyle.Fill; transcript.AutoScroll = true; transcript.FlowDirection = FlowDirection.TopDown; transcript.WrapContents = false; transcript.Padding = new Padding(56, 24, 56, 24);
         main.Controls.Add(transcript, 0, 1);
 
-        var composerHost = new Panel { Dock = DockStyle.Fill, Padding = new Padding(50, 10, 50, 30), Tag = "background" };
+        var composerHost = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(50, 10, 50, 7), ColumnCount = 1, RowCount = 2, Tag = "background" };
+        composerHost.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        composerHost.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        composerHost.RowStyles.Add(new RowStyle(SizeType.Absolute, 21));
         main.Controls.Add(composerHost, 0, 2);
-        composerCard.Dock = DockStyle.Fill; composerCard.Padding = new Padding(14); composerCard.Radius = 16; composerCard.BorderWidth = 1;
-        composerHost.Controls.Add(composerCard);
+        composerCard.Dock = DockStyle.Fill; composerCard.Margin = Padding.Empty; composerCard.Padding = new Padding(14); composerCard.Radius = 16; composerCard.BorderWidth = 1;
+        composerHost.Controls.Add(composerCard, 0, 0);
         attachmentBar.Dock = DockStyle.Top; attachmentBar.Height = 34; attachmentBar.WrapContents = false; attachmentBar.AutoScroll = true; composerCard.Controls.Add(attachmentBar);
         composer.BorderStyle = BorderStyle.None; composer.Font = new Font("Segoe UI", 11); composer.Location = new Point(17, 43); composer.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom; composerCard.Controls.Add(composer);
 
@@ -134,9 +137,8 @@ internal sealed class MainForm : Form
         sendButton.Text = "↑"; sendButton.Font = new Font("Segoe UI Semibold", 15); sendButton.Anchor = AnchorStyles.Right | AnchorStyles.Bottom; sendButton.Size = new Size(44, 40); sendButton.Radius = 11; composerCard.Controls.Add(sendButton);
         stopButton.Text = "■"; stopButton.Anchor = AnchorStyles.Right | AnchorStyles.Bottom; stopButton.Size = new Size(44, 40); stopButton.Radius = 11; stopButton.Visible = false; composerCard.Controls.Add(stopButton);
         usageFooterLabel.Font = new Font("Segoe UI", 8F); usageFooterLabel.TextAlign = ContentAlignment.MiddleRight; usageFooterLabel.AutoEllipsis = true;
-        usageFooterLabel.Anchor = AnchorStyles.Right | AnchorStyles.Bottom; usageFooterLabel.Size = new Size(570, 18); composerHost.Controls.Add(usageFooterLabel); usageFooterLabel.BringToFront();
-        void PositionUsageFooter() => usageFooterLabel.Location = new Point(Math.Max(8, composerHost.ClientSize.Width - usageFooterLabel.Width - 50), composerHost.ClientSize.Height - 20);
-        composerHost.Resize += (_, _) => PositionUsageFooter(); PositionUsageFooter();
+        usageFooterLabel.Dock = DockStyle.Fill; usageFooterLabel.Margin = Padding.Empty; usageFooterLabel.Tag = "transparent-muted";
+        composerHost.Controls.Add(usageFooterLabel, 0, 1);
         composerCard.Resize += (_, _) => PositionComposerControls();
     }
 
@@ -545,11 +547,12 @@ internal sealed class MainForm : Form
     private static void ApplyThemeTree(Control control)
     {
         var tag = control.Tag?.ToString();
-        control.ForeColor = tag is "muted" or "response-meta" ? Theme.Muted : Theme.Text;
+        control.ForeColor = tag is "muted" or "response-meta" or "transparent-muted" ? Theme.Muted : Theme.Text;
         control.BackColor = tag switch
         {
             "sidebar" => Theme.Sidebar, "surface" or "composer" => Theme.Surface,
             "bubble-assistant" => Theme.AssistantBubble, "bubble-user" => Theme.UserBubble, "accent" => Theme.Accent,
+            "transparent-muted" => Color.Transparent,
             "muted" or "response-meta" => control.Parent?.BackColor ?? Theme.Background,
             _ => Theme.Background
         };

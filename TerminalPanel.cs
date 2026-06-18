@@ -8,6 +8,7 @@ internal sealed class TerminalPanel : Panel
     private readonly RichTextBox output = new();
     private readonly TextBox input = new();
     private readonly Label title = new();
+    private readonly Label prompt = new();
     private Process? process;
     public event Action? CloseRequested;
 
@@ -18,10 +19,14 @@ internal sealed class TerminalPanel : Panel
         var close = new ModernButton { Text = "×", Size = new Size(30, 26), Anchor = AnchorStyles.Top | AnchorStyles.Right, Tag = "terminal", DrawBorder = false };
         close.Location = new Point(Width - 44, 4); close.Click += (_, _) => CloseRequested?.Invoke(); Controls.Add(close);
         output.ReadOnly = true; output.BorderStyle = BorderStyle.None; output.Font = Theme.Mono; output.BackColor = Theme.Terminal; output.ForeColor = Theme.Text; output.Tag = "terminal";
-        output.Location = new Point(14, 36); output.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
+        output.Location = new Point(14, 72); output.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right; output.Cursor = Cursors.IBeam;
+        output.MouseDown += (_, _) => input.Focus();
         input.BorderStyle = BorderStyle.FixedSingle; input.Font = Theme.Mono; input.BackColor = Theme.TerminalInput; input.ForeColor = Theme.Text; input.Tag = "terminal-input";
-        input.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom; input.KeyDown += InputKeyDown;
-        Controls.Add(title); Controls.Add(output); Controls.Add(input);
+        input.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right; input.KeyDown += InputKeyDown;
+        prompt.Text = "❯"; prompt.Font = new Font(Theme.Mono, FontStyle.Bold); prompt.ForeColor = Theme.Success; prompt.TextAlign = ContentAlignment.MiddleCenter; prompt.Tag = "terminal";
+        prompt.Anchor = AnchorStyles.Top | AnchorStyles.Left;
+        Controls.Add(title); Controls.Add(output); Controls.Add(prompt); Controls.Add(input);
+        MouseDown += (_, _) => input.Focus();
         Resize += (_, _) => LayoutChildren(); LayoutChildren();
     }
 
@@ -40,7 +45,8 @@ internal sealed class TerminalPanel : Panel
         process.ErrorDataReceived += (_, e) => { if (e.Data is not null) Append(e.Data + Environment.NewLine, true); };
         process.Exited += (_, _) => Append("[terminal exited]" + Environment.NewLine, true);
         process.Start(); process.BeginOutputReadLine(); process.BeginErrorReadLine();
-        Append($"PowerShell · {workingDirectory}{Environment.NewLine}"); input.Focus();
+        Append($"PowerShell · {workingDirectory}{Environment.NewLine}Click anywhere in the terminal and type a command below.{Environment.NewLine}");
+        BeginInvoke(() => input.Focus());
     }
 
     public void Stop()
@@ -53,7 +59,6 @@ internal sealed class TerminalPanel : Panel
     {
         if (e.KeyCode != Keys.Enter) return; e.SuppressKeyPress = true;
         var command = input.Text; input.Clear(); if (string.IsNullOrWhiteSpace(command)) return;
-        Append($"> {command}{Environment.NewLine}");
         try { process?.StandardInput.WriteLine(command); process?.StandardInput.Flush(); }
         catch (Exception ex) { Append(ex.Message + Environment.NewLine, true); }
     }
@@ -69,8 +74,9 @@ internal sealed class TerminalPanel : Panel
     private void LayoutChildren()
     {
         foreach (var button in Controls.OfType<ModernButton>()) button.Location = new Point(ClientSize.Width - 44, 4);
-        output.Size = new Size(Math.Max(100, ClientSize.Width - 28), Math.Max(40, ClientSize.Height - 79));
-        input.Location = new Point(14, ClientSize.Height - 34); input.Size = new Size(Math.Max(100, ClientSize.Width - 28), 24);
+        prompt.Location = new Point(14, 36); prompt.Size = new Size(24, 28);
+        input.Location = new Point(40, 36); input.Size = new Size(Math.Max(100, ClientSize.Width - 54), 28);
+        output.Size = new Size(Math.Max(100, ClientSize.Width - 28), Math.Max(40, ClientSize.Height - 82));
     }
 
     protected override void Dispose(bool disposing) { if (disposing) Stop(); base.Dispose(disposing); }

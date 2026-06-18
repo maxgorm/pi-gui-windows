@@ -394,7 +394,7 @@ internal sealed class MainForm : Form
         return "";
     }
 
-    private Control WrapMessage(string author, RichTextBox box, bool user, bool showResponseMetadata = false)
+    private Control WrapMessage(string author, RichTextBox box, bool user, bool showResponseMetadata = false, bool copyResponse = false)
     {
         var host = new Panel { Width = Math.Max(420, transcript.ClientSize.Width - 115), Height = box.Height + 48, Margin = new Padding(0, 6, 0, 12), Tag = user ? "message-user" : "message-assistant" };
         var bubbleWidth = Math.Min(760, Math.Max(360, host.Width - 120));
@@ -410,7 +410,27 @@ internal sealed class MainForm : Form
             streamingMetadata = new Label { Text = "Generating…", AutoEllipsis = true, Font = new Font("Segoe UI", 8F), Height = 18, Width = bubble.Width - 24, Tag = "response-meta" };
             bubble.Controls.Add(streamingActivity); bubble.Controls.Add(streamingMetadata);
         }
+        if (showResponseMetadata || copyResponse)
+        {
+            var copy = new ModernButton { Text = "Copy", Size = new Size(44, 22), Font = new Font("Segoe UI", 8F), Radius = 6, DrawBorder = false, Tag = "response-copy" };
+            copy.Click += (_, _) => CopyResponseText(box, copy);
+            bubble.Controls.Add(copy);
+        }
         host.Controls.Add(bubble); ApplyThemeTree(host); ResizeMessageBox(box); return host;
+    }
+
+    private static void CopyResponseText(RichTextBox box, ModernButton button)
+    {
+        if (string.IsNullOrWhiteSpace(box.Text)) return;
+        try
+        {
+            Clipboard.SetText(box.Text);
+            button.Text = "✓";
+            var timer = new System.Windows.Forms.Timer { Interval = 1200 };
+            timer.Tick += (_, _) => { timer.Stop(); timer.Dispose(); if (!button.IsDisposed) button.Text = "Copy"; };
+            timer.Start();
+        }
+        catch { button.Text = "Retry"; }
     }
 
     private MarkdownRichTextBox CreateMessageBox(string text, bool user, Color? textColor = null)
@@ -430,8 +450,15 @@ internal sealed class MainForm : Form
             var cursor = box.Bottom + 5;
             if (activity is { Visible: true }) { activity.Location = new Point(12, cursor); activity.Width = bubble.Width - 24; cursor += activity.Height + 5; }
             var metadata = bubble.Controls.OfType<Label>().FirstOrDefault(label => Equals(label.Tag, "response-meta"));
-            if (metadata is not null) { metadata.Location = new Point(12, cursor); metadata.Width = bubble.Width - 24; cursor += metadata.Height; }
-            bubble.Height = metadata is null ? box.Height + 38 : cursor + 10;
+            var copy = bubble.Controls.OfType<ModernButton>().FirstOrDefault(button => Equals(button.Tag, "response-copy"));
+            if (metadata is not null)
+            {
+                metadata.Location = new Point(12, cursor); metadata.Width = bubble.Width - (copy is null ? 24 : 76);
+                if (copy is not null) copy.Location = new Point(bubble.Width - copy.Width - 12, cursor - 2);
+                cursor += Math.Max(metadata.Height, copy?.Height ?? 0);
+            }
+            else if (copy is not null) { copy.Location = new Point(bubble.Width - copy.Width - 12, cursor); cursor += copy.Height; }
+            bubble.Height = metadata is null && copy is null ? box.Height + 38 : cursor + 10;
             if (bubble.Parent is Panel host) host.Height = bubble.Height + 16;
         }
     }
@@ -534,7 +561,7 @@ internal sealed class MainForm : Form
                 var text = SessionCatalog.ReadText(message);
                 if (string.IsNullOrWhiteSpace(text)) continue;
                 if (roleNode.GetString() == "user") transcript.Controls.Add(WrapMessage("YOU", CreateMessageBox(text, true), true));
-                else if (roleNode.GetString() == "assistant") transcript.Controls.Add(WrapMessage("PI", CreateMessageBox(text, false), false));
+                else if (roleNode.GetString() == "assistant") transcript.Controls.Add(WrapMessage("PI", CreateMessageBox(text, false), false, copyResponse: true));
             }
         }
         finally { transcript.ResumeLayout(true); }

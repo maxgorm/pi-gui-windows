@@ -48,13 +48,13 @@ internal sealed class MainForm : Form
     private readonly Label authLabel = new() { Tag = "muted" };
     private readonly Label usageFooterLabel = new() { Tag = "muted" };
     private readonly List<Attachment> attachments = new();
-    private readonly Dictionary<string, ModernButton> activeToolChips = new();
     private readonly SemaphoreSlim connectionLock = new(1, 1);
     private readonly ResponseUsageTracker responseUsage;
     private readonly StringBuilder pendingStreamText = new();
     private readonly System.Windows.Forms.Timer streamFlushTimer = new() { Interval = 50 };
     private MarkdownRichTextBox? streamingMessage;
     private Label? streamingMetadata;
+    private ActivityTimelinePanel? streamingActivity;
     private long sessionTotalTokens;
     private double sessionTotalCredits;
     private long? contextTokens;
@@ -260,19 +260,20 @@ internal sealed class MainForm : Form
                 if (e.TryGetProperty("assistantMessageEvent", out var update) && update.TryGetProperty("type", out var updateType))
                 {
                     if (updateType.GetString() == "text_delta" && update.TryGetProperty("delta", out var delta)) AppendStream(delta.GetString() ?? "");
-                    else if (updateType.GetString() == "thinking_delta") statusLabel.Text = "Thinking…";
+                    else if (updateType.GetString() == "thinking_delta") { statusLabel.Text = "Thinking…"; streamingActivity?.ShowThinking(); }
                     else if (updateType.GetString() == "error" && update.TryGetProperty("error", out var error)) AddSystemMessage(error.ToString(), true);
                 }
                 break;
             case "tool_execution_start":
                 var startedTool = e.TryGetProperty("toolName", out var tn) ? tn.GetString() ?? "tool" : "tool";
                 var startedId = e.TryGetProperty("toolCallId", out var startedIdNode) ? startedIdNode.GetString() : null;
-                var chip = AddToolMessage($"Running {startedTool}…");
-                if (startedId is not null) activeToolChips[startedId] = chip;
+                streamingActivity?.StartTool(startedId ?? Guid.NewGuid().ToString("N"), startedTool, ToolInvocationSummary(e));
                 break;
             case "tool_execution_end":
                 var failed = e.TryGetProperty("isError", out var ie) && ie.GetBoolean();
-                FinishToolMessage(e, failed);
+                var endedTool = e.TryGetProperty("toolName", out var endedName) ? endedName.GetString() ?? "tool" : "tool";
+                var endedId = e.TryGetProperty("toolCallId", out var endedIdNode) ? endedIdNode.GetString() ?? endedTool : endedTool;
+                streamingActivity?.FinishTool(endedId, endedTool, failed, failed ? ToolFailureSummary(e) : "");
                 break;
             case "auto_retry_start": statusLabel.Text = "Retrying…"; break;
             case "compaction_start": statusLabel.Text = "Compacting context…"; break;
@@ -322,10 +323,11 @@ internal sealed class MainForm : Form
         if (streamingMessage is { MarkdownLength: 0 }) streamingMessage.SetMarkdown("Done.");
         else streamingMessage?.FinalizeMarkdown();
         if (streamingMetadata is not null) streamingMetadata.Text = responseUsage.Finish();
+        streamingActivity?.Complete();
         sessionTotalTokens += responseUsage.TotalTokens;
         sessionTotalCredits += responseUsage.EstimatedCopilotCredits;
         if (streamingMessage is not null) ResizeMessageBox(streamingMessage);
-        streamingMessage = null; streamingMetadata = null; pendingStreamText.Clear(); streamFlushTimer.Stop();
+        streamingMessage = null; streamingMetadata = null; streamingActivity = null; pendingStreamText.Clear(); streamFlushTimer.Stop();
         statusLabel.Text = "Ready"; UpdateUsageFooter(); ScrollToBottom();
     }
     private void AddWelcome() => AddSystemMessage("What would you like to build?\n\nPi can read and edit files, run commands, and work across the selected project. Paste an image, drop files here, or attach them below.", false);
@@ -342,30 +344,6 @@ internal sealed class MainForm : Form
         transcript.Controls.Add(WrapMessage(error ? "NOTICE" : "PI", box, false)); ScrollToBottom();
     }
 
-    private ModernButton AddToolMessage(string text)
-    {
-        var chip = new ModernButton { Text = "⚙  " + text, AutoSize = true, Height = 30, Margin = new Padding(12, 4, 0, 5), Font = Theme.Small, Tag = "surface", Enabled = false };
-        transcript.Controls.Add(chip); ApplyThemeTree(chip); ScrollToBottom();
-        return chip;
-    }
-
-    private void FinishToolMessage(JsonElement e, bool failed)
-    {
-        var tool = e.TryGetProperty("toolName", out var name) ? name.GetString() ?? "tool" : "tool";
-        var id = e.TryGetProperty("toolCallId", out var idNode) ? idNode.GetString() : null;
-        var detail = failed ? ToolFailureSummary(e) : "";
-        var text = $"⚙  {tool} {(failed ? "failed" : "finished")}{(detail.Length > 0 ? " — " + detail : "")}";
-        if (id is not null && activeToolChips.Remove(id, out var chip))
-        {
-            chip.Text = text;
-            chip.Tag = failed ? "tool-error" : "muted";
-            chip.ForeColor = failed ? Color.FromArgb(225, 92, 92) : Theme.Muted;
-            chip.Invalidate();
-        }
-        else AddToolMessage(text[3..]);
-        ScrollToBottom();
-    }
-
     private static string ToolFailureSummary(JsonElement e)
     {
         if (!e.TryGetProperty("result", out var result) || !result.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.Array) return "";
@@ -376,6 +354,15 @@ internal sealed class MainForm : Form
         if (text is null) return "";
         var singleLine = string.Join(" ", text.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)).Trim();
         return singleLine.Length <= 180 ? singleLine : singleLine[..177] + "…";
+    }
+
+    private static string ToolInvocationSummary(JsonElement e)
+    {
+        if (!e.TryGetProperty("args", out var args) || args.ValueKind != JsonValueKind.Object) return "";
+        foreach (var name in new[] { "command", "path", "file_path", "filePath", "query", "pattern" })
+            if (args.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String && value.GetString() is { Length: > 0 } text)
+                return text.Length <= 150 ? text : text[..147] + "…";
+        return "";
     }
 
     private Control WrapMessage(string author, RichTextBox box, bool user, bool showResponseMetadata = false)
@@ -389,8 +376,10 @@ internal sealed class MainForm : Form
         bubble.Controls.Add(name); bubble.Controls.Add(box);
         if (showResponseMetadata)
         {
+            streamingActivity = new ActivityTimelinePanel { Width = bubble.Width - 24 };
+            streamingActivity.TimelineHeightChanged += () => { ResizeMessageBox(box); ScrollToBottom(); };
             streamingMetadata = new Label { Text = "Generating…", AutoEllipsis = true, Font = new Font("Segoe UI", 8F), Height = 18, Width = bubble.Width - 24, Tag = "response-meta" };
-            bubble.Controls.Add(streamingMetadata);
+            bubble.Controls.Add(streamingActivity); bubble.Controls.Add(streamingMetadata);
         }
         host.Controls.Add(bubble); ApplyThemeTree(host); ResizeMessageBox(box); return host;
     }
@@ -408,14 +397,17 @@ internal sealed class MainForm : Form
         box.Height = Math.Min(20_000, Math.Max(38, measured.Height + 10));
         if (box.Parent is RoundedPanel bubble)
         {
+            var activity = bubble.Controls.OfType<ActivityTimelinePanel>().FirstOrDefault();
+            var cursor = box.Bottom + 5;
+            if (activity is { Visible: true }) { activity.Location = new Point(12, cursor); activity.Width = bubble.Width - 24; cursor += activity.Height + 5; }
             var metadata = bubble.Controls.OfType<Label>().FirstOrDefault(label => Equals(label.Tag, "response-meta"));
-            if (metadata is not null) { metadata.Location = new Point(12, box.Bottom + 5); metadata.Width = bubble.Width - 24; }
-            bubble.Height = box.Height + (metadata is null ? 38 : 61);
+            if (metadata is not null) { metadata.Location = new Point(12, cursor); metadata.Width = bubble.Width - 24; cursor += metadata.Height; }
+            bubble.Height = metadata is null ? box.Height + 38 : cursor + 10;
             if (bubble.Parent is Panel host) host.Height = bubble.Height + 16;
         }
     }
 
-    private async Task NewChatAsync() { try { if (rpc.IsRunning) await rpc.SendAsync(new { type = "new_session" }); } catch { } streamFlushTimer.Stop(); pendingStreamText.Clear(); activeToolChips.Clear(); transcript.Controls.Clear(); streamingMessage = null; streamingMetadata = null; ResetChatUsage(); AddWelcome(); }
+    private async Task NewChatAsync() { try { if (rpc.IsRunning) await rpc.SendAsync(new { type = "new_session" }); } catch { } streamFlushTimer.Stop(); pendingStreamText.Clear(); transcript.Controls.Clear(); streamingMessage = null; streamingMetadata = null; streamingActivity = null; ResetChatUsage(); AddWelcome(); }
 
     private void ChooseProject()
     {
@@ -433,7 +425,7 @@ internal sealed class MainForm : Form
 
     private Task SwitchProjectAsync(string path)
     {
-        settings.RememberProject(path); UpdateProjectLabel(); RefreshRecentProjects(); activeToolChips.Clear(); transcript.Controls.Clear(); ResetChatUsage(); AddWelcome(); return ConnectAsync();
+        settings.RememberProject(path); UpdateProjectLabel(); RefreshRecentProjects(); transcript.Controls.Clear(); ResetChatUsage(); AddWelcome(); return ConnectAsync();
     }
 
     private void UpdateProjectLabel() => projectButton.Text = $"📁  {DisplayFolder(settings.ProjectPath)}    ▾";

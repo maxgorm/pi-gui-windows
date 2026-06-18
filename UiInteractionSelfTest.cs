@@ -29,6 +29,17 @@ internal static class UiInteractionSelfTest
         streamingMarkdown.FinalizeMarkdown();
         if (streamingMarkdown.Text != "smooth output")
             throw new InvalidOperationException("Streaming Markdown did not finalize correctly.");
+        var activity = new ActivityTimelinePanel { Width = 300 };
+        activity.ShowThinking();
+        activity.StartTool("read-1", "read", "README.md");
+        activity.FinishTool("read-1", "read", false, "");
+        activity.Complete();
+        var activityHeader = activity.Controls.OfType<ModernButton>().Single();
+        activityHeader.PerformClick();
+        if (activity.Height <= 30 || activity.Height > 230)
+            throw new InvalidOperationException("Activity timeline did not expand within its height cap.");
+        activityHeader.PerformClick();
+        if (activity.Height != 30) throw new InvalidOperationException("Activity timeline did not collapse.");
         var usage = new ResponseUsageTracker(id => id);
         usage.Begin("github-copilot", "gpt-5.4");
         using (var message = JsonDocument.Parse("""{"role":"assistant","provider":"github-copilot","model":"gpt-5.4","responseModel":"gpt-5.5","usage":{"totalTokens":123,"cost":{"total":0.02}}}"""))

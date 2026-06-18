@@ -63,6 +63,7 @@ internal sealed class MainForm : Form
     private bool initialized;
     private bool updatingSelections;
     private bool scrollPending;
+    private string? currentSessionPath;
 
     public MainForm()
     {
@@ -114,7 +115,7 @@ internal sealed class MainForm : Form
         sidebar.Resize += (_, _) => PositionSidebarFooter(); PositionSidebarFooter();
 
         var main = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, ColumnCount = 1, Tag = "background" };
-        main.RowStyles.Add(new RowStyle(SizeType.Absolute, 66)); main.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); main.RowStyles.Add(new RowStyle(SizeType.Absolute, 215));
+        main.RowStyles.Add(new RowStyle(SizeType.Absolute, 66)); main.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); main.RowStyles.Add(new RowStyle(SizeType.Absolute, 184));
         root.Controls.Add(main, 1, 0);
 
         var toolbar = new Panel { Dock = DockStyle.Fill, Padding = new Padding(24, 13, 24, 8), Tag = "background" };
@@ -123,7 +124,7 @@ internal sealed class MainForm : Form
         toolbar.Controls.Add(projectButton);
         statusLabel.AutoSize = true; statusLabel.Location = new Point(348, 25); toolbar.Controls.Add(statusLabel);
 
-        transcript.Dock = DockStyle.Fill; transcript.AutoScroll = true; transcript.FlowDirection = FlowDirection.TopDown; transcript.WrapContents = false; transcript.Padding = new Padding(56, 24, 56, 24);
+        transcript.Dock = DockStyle.Fill; transcript.AutoScroll = true; transcript.FlowDirection = FlowDirection.TopDown; transcript.WrapContents = false; transcript.Padding = new Padding(56, 24, 56, 48);
         main.Controls.Add(transcript, 0, 1);
 
         var composerHost = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(50, 10, 50, 7), ColumnCount = 1, RowCount = 2, Tag = "background" };
@@ -196,12 +197,14 @@ internal sealed class MainForm : Form
         approvalBox.Descriptions["Full access"] = "Allow tools without confirmation";
         approvalBox.Descriptions["Custom"] = "Use a conservative custom policy";
         providerBox.SelectedItem = settings.Provider == "github-copilot" ? "GitHub Copilot" : "Codex";
-        PopulateModels(settings.Model); effortBox.SelectedItem = settings.Effort; approvalBox.SelectedItem = ApprovalLabel(settings.ApprovalMode);
+        var preference = settings.GetProviderPreference(ProviderId());
+        settings.Model = preference.Model; settings.Effort = preference.Effort;
+        PopulateModels(preference.Model); effortBox.SelectedItem = preference.Effort; approvalBox.SelectedItem = ApprovalLabel(settings.ApprovalMode);
         if (!Directory.Exists(settings.ProjectPath)) settings.ProjectPath = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         UpdateProjectLabel(); RefreshRecentProjects(); RefreshAuthStatus(); AddWelcome(); UpdateUsageFooter(); initialized = true;
     }
 
-    private async Task ConnectAsync()
+    private async Task ConnectAsync(string? sessionPath = null)
     {
         if (ProviderId() == "github-copilot" && !OAuthService.IsConnected("github-copilot"))
         {
@@ -214,7 +217,8 @@ internal sealed class MainForm : Form
         try
         {
             SetStatus("Starting pi…", false);
-            await rpc.StartAsync(settings.ProjectPath, ProviderId(), ModelId(), settings.Effort, settings.ApprovalMode);
+            await rpc.StartAsync(settings.ProjectPath, ProviderId(), ModelId(), settings.Effort, settings.ApprovalMode, sessionPath);
+            currentSessionPath = sessionPath ?? await GetCurrentSessionPathAsync();
             var connected = OAuthService.IsConnected(ProviderId());
             SetStatus(connected ? "Ready" : $"{providerBox.SelectedItem} sign-in required", connected);
         }
@@ -222,6 +226,14 @@ internal sealed class MainForm : Form
         finally { connectionLock.Release(); }
         RefreshAuthStatus();
         await RefreshSessionStatsAsync();
+    }
+
+    private async Task<string?> GetCurrentSessionPathAsync()
+    {
+        if (!rpc.IsRunning) return null;
+        var response = await rpc.SendAsync(new { type = "get_state" });
+        return response.TryGetProperty("data", out var data) && data.TryGetProperty("sessionFile", out var file)
+            ? file.GetString() : null;
     }
 
     private async Task SendAsync()
@@ -251,6 +263,7 @@ internal sealed class MainForm : Form
             case "agent_end":
                 SetBusy(false); FinishStreamingMessage();
                 RunUiActionAsync(RefreshSessionStatsAsync, "refresh usage");
+                RefreshRecentProjects();
                 break;
             case "message_end":
                 if (e.TryGetProperty("message", out var completedMessage)) responseUsage.AddMessage(completedMessage);
@@ -407,7 +420,13 @@ internal sealed class MainForm : Form
         }
     }
 
-    private async Task NewChatAsync() { try { if (rpc.IsRunning) await rpc.SendAsync(new { type = "new_session" }); } catch { } streamFlushTimer.Stop(); pendingStreamText.Clear(); transcript.Controls.Clear(); streamingMessage = null; streamingMetadata = null; streamingActivity = null; ResetChatUsage(); AddWelcome(); }
+    private async Task NewChatAsync()
+    {
+        try { if (rpc.IsRunning) await rpc.SendAsync(new { type = "new_session" }); currentSessionPath = await GetCurrentSessionPathAsync(); }
+        catch { currentSessionPath = null; }
+        streamFlushTimer.Stop(); pendingStreamText.Clear(); transcript.Controls.Clear(); streamingMessage = null; streamingMetadata = null; streamingActivity = null;
+        ResetChatUsage(); AddWelcome(); RefreshRecentProjects();
+    }
 
     private void ChooseProject()
     {
@@ -425,7 +444,7 @@ internal sealed class MainForm : Form
 
     private Task SwitchProjectAsync(string path)
     {
-        settings.RememberProject(path); UpdateProjectLabel(); RefreshRecentProjects(); transcript.Controls.Clear(); ResetChatUsage(); AddWelcome(); return ConnectAsync();
+        currentSessionPath = null; settings.RememberProject(path); UpdateProjectLabel(); RefreshRecentProjects(); transcript.Controls.Clear(); ResetChatUsage(); AddWelcome(); return ConnectAsync();
     }
 
     private void UpdateProjectLabel() => projectButton.Text = $"📁  {DisplayFolder(settings.ProjectPath)}    ▾";
@@ -433,13 +452,75 @@ internal sealed class MainForm : Form
 
     private void RefreshRecentProjects()
     {
+        var saved = SessionCatalog.Load();
         recentProjects.Controls.Clear();
-        foreach (var path in settings.RecentProjects.Prepend(settings.ProjectPath).Distinct(StringComparer.OrdinalIgnoreCase))
+        var projects = settings.RecentProjects.Prepend(settings.ProjectPath).Concat(saved.Select(session => session.ProjectPath)).Distinct(StringComparer.OrdinalIgnoreCase);
+        foreach (var path in projects)
         {
-            var button = MakeButton("📁  " + DisplayFolder(path), 37, "sidebar"); button.Width = 214; button.TextAlign = ContentAlignment.MiddleLeft; button.Padding = new Padding(10, 0, 0, 0); button.Tag = path; button.AutoEllipsis = true;
+            var button = MakeButton("📁  " + DisplayFolder(path), 35, "sidebar"); button.Width = 214; button.TextAlign = ContentAlignment.MiddleLeft; button.Padding = new Padding(10, 0, 0, 0); button.Tag = path; button.AutoEllipsis = true;
             button.Click += (_, _) => RunUiActionAsync(() => SwitchProjectAsync((string)button.Tag), "switch projects"); recentProjects.Controls.Add(button);
+            foreach (var session in saved.Where(item => string.Equals(item.ProjectPath, path, StringComparison.OrdinalIgnoreCase)).Take(6))
+            {
+                var sessionButton = MakeButton($"{session.Title}   {RelativeAge(session.UpdatedAt)}", 31, "sidebar");
+                sessionButton.Width = 204; sessionButton.Margin = new Padding(10, 0, 0, 1); sessionButton.Padding = new Padding(14, 0, 4, 0);
+                sessionButton.TextAlign = ContentAlignment.MiddleLeft; sessionButton.DrawBorder = false; sessionButton.AutoEllipsis = true; sessionButton.Tag = session;
+                if (string.Equals(currentSessionPath, session.FilePath, StringComparison.OrdinalIgnoreCase)) sessionButton.NormalColor = Theme.SurfaceHover;
+                sessionButton.Click += (_, _) => RunUiActionAsync(() => OpenSessionAsync((SavedSession)sessionButton.Tag), "open chat");
+                recentProjects.Controls.Add(sessionButton);
+            }
         }
         ApplyThemeTree(recentProjects);
+    }
+
+    private async Task OpenSessionAsync(SavedSession session)
+    {
+        updatingSelections = true;
+        try
+        {
+            settings.Provider = session.Provider;
+            providerBox.SelectedItem = session.Provider == "github-copilot" ? "GitHub Copilot" : "Codex";
+            PopulateModels(session.Model);
+            effortBox.SelectedItem = effortBox.Items.Contains(session.Effort) ? session.Effort : "medium";
+            settings.Model = ModelId(); settings.Effort = effortBox.SelectedItem?.ToString() ?? "medium";
+            var preference = settings.GetProviderPreference(settings.Provider); preference.Model = settings.Model; preference.Effort = settings.Effort;
+        }
+        finally { updatingSelections = false; }
+        settings.RememberProject(session.ProjectPath); UpdateProjectLabel(); transcript.Controls.Clear(); ResetChatUsage(); SetStatus("Opening chat…", false);
+        await ConnectAsync(session.FilePath);
+        currentSessionPath = session.FilePath;
+        await LoadSessionMessagesAsync();
+        await RefreshSessionStatsAsync();
+        RefreshRecentProjects();
+    }
+
+    private async Task LoadSessionMessagesAsync()
+    {
+        var response = await rpc.SendAsync(new { type = "get_messages" }, TimeSpan.FromSeconds(30));
+        if (!response.TryGetProperty("data", out var data) || !data.TryGetProperty("messages", out var messages) || messages.ValueKind != JsonValueKind.Array) return;
+        transcript.SuspendLayout();
+        try
+        {
+            foreach (var message in messages.EnumerateArray())
+            {
+                if (!message.TryGetProperty("role", out var roleNode)) continue;
+                var text = SessionCatalog.ReadText(message);
+                if (string.IsNullOrWhiteSpace(text)) continue;
+                if (roleNode.GetString() == "user") transcript.Controls.Add(WrapMessage("YOU", CreateMessageBox(text, true), true));
+                else if (roleNode.GetString() == "assistant") transcript.Controls.Add(WrapMessage("PI", CreateMessageBox(text, false), false));
+            }
+        }
+        finally { transcript.ResumeLayout(true); }
+        ScrollToBottom();
+    }
+
+    private static string RelativeAge(DateTime updatedAt)
+    {
+        var age = DateTime.Now - updatedAt;
+        if (age.TotalMinutes < 1) return "now";
+        if (age.TotalHours < 1) return $"{(int)age.TotalMinutes}m";
+        if (age.TotalDays < 1) return $"{(int)age.TotalHours}h";
+        if (age.TotalDays < 7) return $"{(int)age.TotalDays}d";
+        return $"{Math.Max(1, (int)(age.TotalDays / 7))}w";
     }
 
     private void ChooseFiles() { using var dialog = new OpenFileDialog { Multiselect = true, Title = "Attach images or files", Filter = "All files|*.*" }; if (dialog.ShowDialog(this) == DialogResult.OK) AddFiles(dialog.FileNames); }
@@ -458,7 +539,8 @@ internal sealed class MainForm : Form
 
     private async Task ChangeModelAsync()
     {
-        if (modelBox.SelectedItem is null) return; settings.Model = ModelId(); settings.Save(); if (!initialized) return;
+        if (modelBox.SelectedItem is null) return;
+        settings.Model = ModelId(); settings.GetProviderPreference(ProviderId()).Model = settings.Model; settings.Save(); if (!initialized) return;
         await connectionLock.WaitAsync();
         try { if (rpc.IsRunning) await rpc.SendAsync(new { type = "set_model", provider = ProviderId(), modelId = settings.Model }); }
         catch (Exception ex) { AddSystemMessage(ex.Message, true); }
@@ -469,15 +551,16 @@ internal sealed class MainForm : Form
         if (providerBox.SelectedItem is null) return;
         ResetChatUsage();
         settings.Provider = ProviderId();
+        var preference = settings.GetProviderPreference(settings.Provider);
         updatingSelections = true;
-        try { PopulateModels(settings.Provider == "github-copilot" ? "gpt-5.3-codex" : "gpt-5.5"); }
+        try { PopulateModels(preference.Model); effortBox.SelectedItem = preference.Effort; }
         finally { updatingSelections = false; }
-        settings.Model = ModelId(); settings.Save(); RefreshAuthStatus();
+        settings.Model = ModelId(); settings.Effort = effortBox.SelectedItem?.ToString() ?? "medium"; settings.Save(); RefreshAuthStatus();
         if (initialized) await ConnectAsync();
     }
     private async Task ChangeEffortAsync()
     {
-        if (effortBox.SelectedItem is not string effort) return; settings.Effort = effort; settings.Save(); if (!initialized) return;
+        if (effortBox.SelectedItem is not string effort) return; settings.Effort = effort; settings.GetProviderPreference(ProviderId()).Effort = effort; settings.Save(); if (!initialized) return;
         await connectionLock.WaitAsync();
         try { if (rpc.IsRunning) await rpc.SendAsync(new { type = "set_thinking_level", level = effort }); }
         catch (Exception ex) { AddSystemMessage(ex.Message, true); }

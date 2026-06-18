@@ -72,7 +72,15 @@ internal class ModernButton : Button
         using var brush = new SolidBrush(hovering ? HoverColor : NormalColor);
         e.Graphics.FillPath(brush, path);
         if (DrawBorder) { using var pen = new Pen(BorderColor); e.Graphics.DrawPath(pen, path); }
-        TextRenderer.DrawText(e.Graphics, Text, Font, rect, ForeColor, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+        var textRect = new Rectangle(rect.X + Padding.Left, rect.Y + Padding.Top,
+            Math.Max(1, rect.Width - Padding.Horizontal), Math.Max(1, rect.Height - Padding.Vertical));
+        var alignment = TextAlign switch
+        {
+            ContentAlignment.MiddleLeft or ContentAlignment.TopLeft or ContentAlignment.BottomLeft => TextFormatFlags.Left,
+            ContentAlignment.MiddleRight or ContentAlignment.TopRight or ContentAlignment.BottomRight => TextFormatFlags.Right,
+            _ => TextFormatFlags.HorizontalCenter
+        };
+        TextRenderer.DrawText(e.Graphics, Text, Font, textRect, ForeColor, alignment | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
     }
 }
 

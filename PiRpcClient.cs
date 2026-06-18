@@ -42,7 +42,7 @@ internal sealed class PiRpcClient : IAsyncDisposable
         }
     }
 
-    public async Task StartAsync(string projectPath, string provider, string model, string effort, string approvalMode)
+    public async Task StartAsync(string projectPath, string provider, string model, string effort, string approvalMode, string? sessionPath = null)
     {
         await lifecycleLock.WaitAsync();
         try
@@ -70,6 +70,11 @@ internal sealed class PiRpcClient : IAsyncDisposable
         psi.ArgumentList.Add(provider);
         psi.ArgumentList.Add("--model");
         psi.ArgumentList.Add(model);
+        if (!string.IsNullOrWhiteSpace(sessionPath))
+        {
+            psi.ArgumentList.Add("--session");
+            psi.ArgumentList.Add(sessionPath);
+        }
         psi.ArgumentList.Add("--append-system-prompt");
         psi.ArgumentList.Add(BuildWindowsWorkspaceInstructions(projectPath));
         psi.ArgumentList.Add("--approve");

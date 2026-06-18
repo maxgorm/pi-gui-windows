@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
 
 namespace PiGUI;
@@ -12,7 +13,8 @@ internal sealed class OAuthService
         var psi = new ProcessStartInfo
         {
             FileName = RuntimeLocator.FindNodeExecutable(), WorkingDirectory = Path.GetDirectoryName(helper)!, UseShellExecute = false,
-            RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true
+            RedirectStandardOutput = true, RedirectStandardError = true,
+            StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8, CreateNoWindow = true
         };
         psi.ArgumentList.Add(helper); psi.ArgumentList.Add(provider);
         using var process = new Process { StartInfo = psi };

@@ -47,7 +47,7 @@ internal sealed class MainForm : Form
     private readonly Label authLabel = new() { Tag = "muted" };
     private readonly List<Attachment> attachments = new();
     private readonly SemaphoreSlim connectionLock = new(1, 1);
-    private RichTextBox? streamingMessage;
+    private MarkdownRichTextBox? streamingMessage;
     private bool initialized;
     private bool updatingSelections;
 
@@ -252,10 +252,10 @@ internal sealed class MainForm : Form
 
     private void AppendStream(string text)
     {
-        EnsureStreamingMessage(); streamingMessage!.AppendText(text); ResizeMessageBox(streamingMessage); ScrollToBottom();
+        EnsureStreamingMessage(); streamingMessage!.AppendMarkdown(text); ResizeMessageBox(streamingMessage); ScrollToBottom();
     }
 
-    private void FinishStreamingMessage() { if (streamingMessage is { TextLength: 0 }) streamingMessage.Text = "Done."; streamingMessage = null; statusLabel.Text = "Ready"; }
+    private void FinishStreamingMessage() { if (streamingMessage is { MarkdownLength: 0 }) streamingMessage.SetMarkdown("Done."); streamingMessage = null; statusLabel.Text = "Ready"; }
     private void AddWelcome() => AddSystemMessage("What would you like to build?\n\nPi can read and edit files, run commands, and work across the selected project. Paste an image, drop files here, or attach them below.", false);
 
     private void AddUserMessage(string text, List<Attachment> files)
@@ -266,7 +266,7 @@ internal sealed class MainForm : Form
 
     private void AddSystemMessage(string text, bool error)
     {
-        var box = CreateMessageBox(text, false); if (error) box.ForeColor = Color.FromArgb(225, 92, 92);
+        var box = CreateMessageBox(text, false, error ? Color.FromArgb(225, 92, 92) : null);
         transcript.Controls.Add(WrapMessage(error ? "NOTICE" : "PI", box, false)); ScrollToBottom();
     }
 
@@ -287,9 +287,10 @@ internal sealed class MainForm : Form
         bubble.Controls.Add(name); bubble.Controls.Add(box); host.Controls.Add(bubble); ApplyThemeTree(host); return host;
     }
 
-    private RichTextBox CreateMessageBox(string text, bool user)
+    private MarkdownRichTextBox CreateMessageBox(string text, bool user, Color? textColor = null)
     {
-        var box = new RichTextBox { Text = text, ReadOnly = true, BorderStyle = BorderStyle.None, DetectUrls = true, ScrollBars = RichTextBoxScrollBars.None, Font = Theme.Ui, Width = 700, TabStop = false, Tag = user ? "bubble-user" : "bubble-assistant" };
+        var box = new MarkdownRichTextBox { Width = 700, Tag = user ? "bubble-user" : "bubble-assistant" };
+        box.SetMarkdown(text, textColor);
         ResizeMessageBox(box); return box;
     }
 
@@ -458,6 +459,7 @@ internal sealed class MainForm : Form
             button.HoverColor = tag == "accent" ? Theme.AccentHover : Theme.SurfaceHover; button.BorderColor = tag == "sidebar" ? Theme.Sidebar : Theme.Border; button.ForeColor = tag == "accent" ? Color.White : Theme.Text; button.Invalidate();
         }
         if (control is ModernDropdown dropdown) dropdown.Invalidate();
+        if (control is MarkdownRichTextBox markdown) markdown.ApplyMarkdownTheme();
         if (control is RoundedPanel rounded) { rounded.BorderColor = Theme.Border; rounded.Invalidate(); }
         foreach (Control child in control.Controls) ApplyThemeTree(child);
     }

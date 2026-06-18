@@ -16,6 +16,9 @@ internal static class UiInteractionSelfTest
         dropdown.SelectedItem = "Codex";
         dropdown.SelectedIndexChanged += (_, _) => changed = true;
         form.Controls.Add(dropdown);
+        var markdown = new MarkdownRichTextBox { Location = new Point(20, 70), Width = 260 };
+        markdown.SetMarkdown("# Status\nI’m **ready** with `code`.\n- First item");
+        form.Controls.Add(markdown);
 
         ThreadExceptionEventHandler threadException = (_, e) => { failure = e.Exception; form.Close(); };
         Application.ThreadException += threadException;
@@ -26,6 +29,10 @@ internal static class UiInteractionSelfTest
                 typeof(ModernDropdown).GetMethod("ShowMenu", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(dropdown, null);
                 var menu = (ContextMenuStrip?)typeof(ModernDropdown).GetField("activeMenu", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(dropdown)
                     ?? throw new InvalidOperationException("The drop-down menu did not open.");
+                if (!markdown.Text.Contains("I’m ready with code.", StringComparison.Ordinal) ||
+                    markdown.Text.Contains("**", StringComparison.Ordinal) ||
+                    !markdown.Text.Contains("•  First item", StringComparison.Ordinal))
+                    throw new InvalidOperationException("Markdown or Unicode chat rendering failed.");
                 menu.Items[1].PerformClick();
                 if (!menu.IsDisposed) menu.Close(ToolStripDropDownCloseReason.ItemClicked);
                 var timer = new System.Windows.Forms.Timer { Interval = 100 };

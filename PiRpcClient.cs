@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
 
 namespace PiGUI;
@@ -53,7 +54,9 @@ internal sealed class PiRpcClient : IAsyncDisposable
             var psi = new ProcessStartInfo
             {
                 FileName = RuntimeLocator.FindNodeExecutable(), WorkingDirectory = projectPath, UseShellExecute = false,
-                RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true
+                RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
+                StandardInputEncoding = new UTF8Encoding(false), StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8,
+                CreateNoWindow = true
             };
             psi.ArgumentList.Add(RuntimeCliPath);
         psi.ArgumentList.Add("--mode");

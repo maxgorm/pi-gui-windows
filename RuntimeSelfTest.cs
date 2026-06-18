@@ -23,6 +23,11 @@ internal static class RuntimeSelfTest
                 client.StartAsync(project, "openai-codex", "gpt-5.4", "low", "full"),
                 client.StartAsync(project, "openai-codex", "gpt-5.4-mini", "high", "full")
             );
+            var nestedBash = await client.SendAsync(new { type = "bash", command = "bash -lc 'printf nested-git-bash-ok'" });
+            if (!nestedBash.ToString().Contains("nested-git-bash-ok", StringComparison.Ordinal))
+            {
+                pollingCancellation.Cancel(); await polling; return 1;
+            }
             pollingCancellation.Cancel();
             await polling;
             await client.StopAsync();

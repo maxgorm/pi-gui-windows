@@ -58,6 +58,11 @@ internal sealed class PiRpcClient : IAsyncDisposable
                 StandardInputEncoding = new UTF8Encoding(false), StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8,
                 CreateNoWindow = true
             };
+            var gitBash = RuntimeLocator.FindGitBashExecutable();
+            var pathKey = psi.Environment.Keys.FirstOrDefault(key => key.Equals("PATH", StringComparison.OrdinalIgnoreCase)) ?? "PATH";
+            psi.Environment.TryGetValue(pathKey, out var existingPath);
+            psi.Environment[pathKey] = Path.GetDirectoryName(gitBash) + Path.PathSeparator + (existingPath ?? "");
+            psi.Environment["SHELL"] = gitBash;
             psi.ArgumentList.Add(RuntimeCliPath);
         psi.ArgumentList.Add("--mode");
         psi.ArgumentList.Add("rpc");
@@ -65,6 +70,8 @@ internal sealed class PiRpcClient : IAsyncDisposable
         psi.ArgumentList.Add(provider);
         psi.ArgumentList.Add("--model");
         psi.ArgumentList.Add(model);
+        psi.ArgumentList.Add("--append-system-prompt");
+        psi.ArgumentList.Add(BuildWindowsWorkspaceInstructions(projectPath));
         psi.ArgumentList.Add("--approve");
             var approvalExtension = FindApprovalExtension();
             if (File.Exists(approvalExtension))
@@ -87,6 +94,13 @@ internal sealed class PiRpcClient : IAsyncDisposable
         }
         finally { lifecycleLock.Release(); }
     }
+
+    private static string BuildWindowsWorkspaceInstructions(string projectPath) => $"""
+        Pi GUI is running natively on Windows. The exact workspace root is:
+        {projectPath}
+
+        Treat that path as authoritative. Use paths relative to the workspace whenever possible. Never invent or substitute a Windows username, home directory, Downloads path, or project root. Before reading a guessed file, inspect the actual workspace. The bash tool already runs commands in Git Bash at the workspace root; pass the command directly and do not wrap it in bash, /bin/bash, wsl, or wsl.exe.
+        """;
 
     public async Task<JsonElement> SendAsync(object command, TimeSpan? timeout = null)
     {

@@ -2,6 +2,18 @@ namespace PiGUI;
 
 internal static class RuntimeLocator
 {
+    public static string FindGitBashExecutable()
+    {
+        var candidates = new[]
+        {
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Git", "bin", "bash.exe"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Git", "bin", "bash.exe"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "Git", "bin", "bash.exe")
+        };
+        return candidates.FirstOrDefault(File.Exists)
+            ?? throw new FileNotFoundException("Git Bash could not be found. Install Git for Windows, then restart Pi GUI.");
+    }
+
     public static string FindNodeExecutable()
     {
         var candidates = new List<string>();

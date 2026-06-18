@@ -1,3 +1,5 @@
+import { win32 } from "node:path";
+
 const riskyCommand = /(^|\s)(rm\s+(-[^\s]*r|--recursive)|del\s+\/|rmdir|format|diskpart|shutdown|reboot|sudo|runas|curl|wget|invoke-webrequest|iwr\b|git\s+push|npm\s+publish|gh\s+pr\s+merge)(\s|$)/i;
 const destructiveGit = /git\s+(reset\s+--hard|clean\s+-[a-z]*f|checkout\s+--|restore\s+[^\n]*--source)/i;
 
@@ -14,6 +16,24 @@ function outsideWorkspace(event: any, cwd: string): boolean {
   if (!target || !/^[a-zA-Z]:[\\/]/.test(String(target))) return false;
   const normalized = String(target).replaceAll("/", "\\").toLowerCase();
   return !normalized.startsWith(cwd.replaceAll("/", "\\").toLowerCase() + "\\");
+}
+
+export function normalizeToolInput(event: any, cwd: string): void {
+  const input = event.input ?? {};
+  const workspaceName = win32.basename(cwd);
+  for (const key of ["path", "file_path", "filePath"]) {
+    const target = input[key];
+    if (typeof target !== "string" || !win32.isAbsolute(target)) continue;
+    const parts = win32.normalize(target).split("\\");
+    const workspaceIndex = parts.findIndex((part) => part.toLowerCase() === workspaceName.toLowerCase());
+    if (workspaceIndex >= 0 && outsideWorkspace({ input: { path: target } }, cwd))
+      input[key] = win32.join(cwd, ...parts.slice(workspaceIndex + 1));
+  }
+
+  if (String(event.toolName ?? "").toLowerCase() === "bash" && typeof input.command === "string") {
+    const wrapper = input.command.match(/^\s*(?:(?:wsl|wsl\.exe)\s+)?(?:\/bin\/)?bash(?:\.exe)?\s+-l?c\s+(["'])([\s\S]*)\1\s*$/i);
+    if (wrapper) input.command = wrapper[2];
+  }
 }
 
 export function approvalDecision(event: any, cwd: string, mode: string): "allow" | "confirm" {
@@ -40,6 +60,7 @@ export default function approvalExtension(pi: any) {
   }
   pi.on("tool_call", async (event: any, ctx: any) => {
     const mode = process.env.PI_GUI_APPROVAL_MODE ?? "ask";
+    normalizeToolInput(event, ctx.cwd ?? process.cwd());
     const command = String(event.input?.command ?? "");
     const unsafe = riskyCommand.test(command) || destructiveGit.test(command) || outsideWorkspace(event, ctx.cwd ?? process.cwd());
     if (approvalDecision(event, ctx.cwd ?? process.cwd(), mode) === "allow") return;

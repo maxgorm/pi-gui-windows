@@ -2,7 +2,7 @@ import path from "node:path";
 import { createJiti } from "./node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.mjs";
 
 const jiti = createJiti(import.meta.url);
-const { approvalDecision } = await jiti.import(path.resolve("pi-gui-approval-extension.ts"));
+const { approvalDecision, normalizeToolInput } = await jiti.import(path.resolve("pi-gui-approval-extension.ts"));
 const cwd = "C:\\workspace";
 const read = { toolName: "read", input: { path: "README.md" } };
 const bash = { toolName: "bash", input: { command: "npm test" } };
@@ -21,6 +21,14 @@ assertDecision(read, "full", "allow");
 assertDecision(unsafe, "full", "allow");
 assertDecision(read, "custom", "confirm");
 assertDecision(write, "custom", "confirm");
+
+const inventedRead = { toolName: "read", input: { path: "C:\\Users\\wrong-user\\Downloads\\workspace\\src\\app.cs" } };
+normalizeToolInput(inventedRead, "C:\\Users\\real-user\\Projects\\workspace");
+if (inventedRead.input.path !== "C:\\Users\\real-user\\Projects\\workspace\\src\\app.cs")
+  throw new Error(`Workspace path was not corrected: ${inventedRead.input.path}`);
+const wrappedBash = { toolName: "bash", input: { command: "wsl.exe bash -lc 'npm test'" } };
+normalizeToolInput(wrappedBash, cwd);
+if (wrappedBash.input.command !== "npm test") throw new Error(`Bash wrapper was not removed: ${wrappedBash.input.command}`);
 
 console.log("Permission policy smoke test passed.");
 

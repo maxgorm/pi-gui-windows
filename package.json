@@ -1,0 +1,9 @@
+{
+  "name": "pi-gui-windows-runtime",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Pinned pi runtime used by the native Windows GUI",
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.79.6"
+  }
+}

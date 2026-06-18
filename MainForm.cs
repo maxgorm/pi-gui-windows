@@ -43,6 +43,10 @@ internal sealed class MainForm : Form
     private readonly ModernButton stopButton = new() { Tag = "surface" };
     private readonly ModernButton themeButton = new() { Tag = "sidebar" };
     private readonly RoundedPanel composerCard = new() { Tag = "surface" };
+    private readonly TableLayoutPanel mainLayout = new() { Dock = DockStyle.Fill, RowCount = 4, ColumnCount = 1, Tag = "background" };
+    private readonly AccountsPanel accountsPanel = new() { Visible = false };
+    private readonly TerminalPanel terminalPanel = new() { Visible = false };
+    private readonly ModernButton terminalButton = new() { Tag = "surface" };
     private ModernButton? attachButton;
     private readonly Label statusLabel = new() { Tag = "muted" };
     private readonly Label authLabel = new() { Tag = "muted" };
@@ -80,8 +84,9 @@ internal sealed class MainForm : Form
         WireEvents();
         PopulateSettings();
         ApplyThemeTree(this);
+        HandleCreated += (_, _) => NativeTheme.Apply(this);
         Shown += (_, _) => RunUiActionAsync(async () => { PositionComposerControls(); await ConnectAsync(); }, "start Pi");
-        FormClosing += (_, _) => { streamFlushTimer.Stop(); streamFlushTimer.Dispose(); settings.Save(); rpc.DisposeAsync().AsTask().GetAwaiter().GetResult(); };
+        FormClosing += (_, _) => { streamFlushTimer.Stop(); streamFlushTimer.Dispose(); terminalPanel.Stop(); settings.Save(); rpc.DisposeAsync().AsTask().GetAwaiter().GetResult(); };
     }
 
     private void BuildLayout()
@@ -114,24 +119,31 @@ internal sealed class MainForm : Form
         void PositionSidebarFooter() { accounts.Top = sidebar.ClientSize.Height - 58; authLabel.Location = new Point(20, accounts.Top - 30); }
         sidebar.Resize += (_, _) => PositionSidebarFooter(); PositionSidebarFooter();
 
-        var main = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, ColumnCount = 1, Tag = "background" };
-        main.RowStyles.Add(new RowStyle(SizeType.Absolute, 66)); main.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); main.RowStyles.Add(new RowStyle(SizeType.Absolute, 184));
-        root.Controls.Add(main, 1, 0);
+        mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 66)); mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 184)); mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));
+        var mainHost = new Panel { Dock = DockStyle.Fill, Tag = "background" };
+        root.Controls.Add(mainHost, 1, 0); mainHost.Controls.Add(mainLayout); mainHost.Controls.Add(accountsPanel); accountsPanel.BringToFront();
+        accountsPanel.CloseRequested += CloseAccounts;
+        accountsPanel.AccountsChanged += () => RunUiActionAsync(async () => { RefreshAuthStatus(); ResetChatUsage(); await ConnectAsync(); }, "refresh accounts");
 
         var toolbar = new Panel { Dock = DockStyle.Fill, Padding = new Padding(24, 13, 24, 8), Tag = "background" };
-        main.Controls.Add(toolbar, 0, 0);
+        mainLayout.Controls.Add(toolbar, 0, 0);
         projectButton.TextAlign = ContentAlignment.MiddleLeft; projectButton.AutoEllipsis = true; projectButton.Padding = new Padding(12, 0, 0, 0); projectButton.Location = new Point(24, 13); projectButton.Size = new Size(305, 40);
         toolbar.Controls.Add(projectButton);
         statusLabel.AutoSize = true; statusLabel.Location = new Point(348, 25); toolbar.Controls.Add(statusLabel);
+        terminalButton.Text = ">_  Terminal"; terminalButton.Size = new Size(112, 36); terminalButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        terminalButton.Click += (_, _) => ToggleTerminal(); toolbar.Controls.Add(terminalButton);
+        void PositionTerminalButton() => terminalButton.Location = new Point(Math.Max(360, toolbar.ClientSize.Width - 138), 15);
+        toolbar.Resize += (_, _) => PositionTerminalButton(); toolbar.Layout += (_, _) => PositionTerminalButton(); PositionTerminalButton();
 
         transcript.Dock = DockStyle.Fill; transcript.AutoScroll = true; transcript.FlowDirection = FlowDirection.TopDown; transcript.WrapContents = false; transcript.Padding = new Padding(56, 24, 56, 48);
-        main.Controls.Add(transcript, 0, 1);
+        mainLayout.Controls.Add(transcript, 0, 1);
 
         var composerHost = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(50, 10, 50, 7), ColumnCount = 1, RowCount = 2, Tag = "background" };
         composerHost.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         composerHost.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         composerHost.RowStyles.Add(new RowStyle(SizeType.Absolute, 21));
-        main.Controls.Add(composerHost, 0, 2);
+        mainLayout.Controls.Add(composerHost, 0, 2);
         composerCard.Dock = DockStyle.Fill; composerCard.Margin = Padding.Empty; composerCard.Padding = new Padding(14); composerCard.Radius = 16; composerCard.BorderWidth = 1;
         composerHost.Controls.Add(composerCard, 0, 0);
         attachmentBar.Dock = DockStyle.Top; attachmentBar.Height = 34; attachmentBar.WrapContents = false; attachmentBar.AutoScroll = true; composerCard.Controls.Add(attachmentBar);
@@ -147,6 +159,8 @@ internal sealed class MainForm : Form
         usageFooterLabel.Dock = DockStyle.Fill; usageFooterLabel.Margin = Padding.Empty; usageFooterLabel.Tag = "transparent-muted";
         composerHost.Controls.Add(usageFooterLabel, 0, 1);
         composerCard.Resize += (_, _) => PositionComposerControls();
+        mainLayout.Controls.Add(terminalPanel, 0, 3);
+        terminalPanel.CloseRequested += CloseTerminal;
     }
 
     private void PositionComposerControls()
@@ -299,9 +313,11 @@ internal sealed class MainForm : Form
         var id = e.GetProperty("id").GetString()!;
         var title = e.TryGetProperty("title", out var t) ? t.GetString() ?? "Approve action?" : "Approve action?";
         var detail = e.TryGetProperty("message", out var m) ? m.GetString() ?? "" : "";
-        using var dialog = new ApprovalForm(title, detail);
-        dialog.ShowDialog(this);
-        await rpc.SendRawAsync(new { type = "extension_ui_response", id, confirmed = dialog.Approved });
+        var approval = new InlineApprovalPanel(title, detail) { Width = Math.Min(720, Math.Max(420, transcript.ClientSize.Width - 120)) };
+        transcript.Controls.Add(approval); ApplyThemeTree(approval); ScrollToBottom();
+        var approved = await approval.Decision;
+        transcript.Controls.Remove(approval); approval.Dispose();
+        await rpc.SendRawAsync(new { type = "extension_ui_response", id, confirmed = approved });
     }
 
     private void EnsureStreamingMessage()
@@ -442,9 +458,11 @@ internal sealed class MainForm : Form
             RunUiActionAsync(() => SwitchProjectAsync(path), "switch projects");
     }
 
-    private Task SwitchProjectAsync(string path)
+    private async Task SwitchProjectAsync(string path)
     {
-        currentSessionPath = null; settings.RememberProject(path); UpdateProjectLabel(); RefreshRecentProjects(); transcript.Controls.Clear(); ResetChatUsage(); AddWelcome(); return ConnectAsync();
+        currentSessionPath = null; settings.RememberProject(path); UpdateProjectLabel(); RefreshRecentProjects(); transcript.Controls.Clear(); ResetChatUsage(); AddWelcome();
+        if (terminalPanel.Visible) terminalPanel.Start(path);
+        await ConnectAsync();
     }
 
     private void UpdateProjectLabel() => projectButton.Text = $"📁  {DisplayFolder(settings.ProjectPath)}    ▾";
@@ -461,15 +479,25 @@ internal sealed class MainForm : Form
             button.Click += (_, _) => RunUiActionAsync(() => SwitchProjectAsync((string)button.Tag), "switch projects"); recentProjects.Controls.Add(button);
             foreach (var session in saved.Where(item => string.Equals(item.ProjectPath, path, StringComparison.OrdinalIgnoreCase)).Take(6))
             {
-                var sessionButton = MakeButton($"{session.Title}   {RelativeAge(session.UpdatedAt)}", 31, "sidebar");
-                sessionButton.Width = 204; sessionButton.Margin = new Padding(10, 0, 0, 1); sessionButton.Padding = new Padding(14, 0, 4, 0);
-                sessionButton.TextAlign = ContentAlignment.MiddleLeft; sessionButton.DrawBorder = false; sessionButton.AutoEllipsis = true; sessionButton.Tag = session;
-                if (string.Equals(currentSessionPath, session.FilePath, StringComparison.OrdinalIgnoreCase)) sessionButton.NormalColor = Theme.SurfaceHover;
-                sessionButton.Click += (_, _) => RunUiActionAsync(() => OpenSessionAsync((SavedSession)sessionButton.Tag), "open chat");
-                recentProjects.Controls.Add(sessionButton);
+                var row = new ChatSessionRow(session, RelativeAge(session.UpdatedAt), string.Equals(currentSessionPath, session.FilePath, StringComparison.OrdinalIgnoreCase));
+                row.OpenRequested += item => RunUiActionAsync(() => OpenSessionAsync(item), "open chat");
+                row.DeleteRequested += item => RunUiActionAsync(() => DeleteSessionAsync(item), "delete chat");
+                recentProjects.Controls.Add(row);
             }
         }
         ApplyThemeTree(recentProjects);
+    }
+
+    private async Task DeleteSessionAsync(SavedSession session)
+    {
+        if (string.Equals(currentSessionPath, session.FilePath, StringComparison.OrdinalIgnoreCase))
+        {
+            if (rpc.IsRunning) await rpc.SendAsync(new { type = "new_session" });
+            currentSessionPath = await GetCurrentSessionPathAsync();
+            transcript.Controls.Clear(); ResetChatUsage(); AddWelcome();
+        }
+        File.Delete(session.FilePath);
+        RefreshRecentProjects();
     }
 
     private async Task OpenSessionAsync(SavedSession session)
@@ -661,7 +689,18 @@ internal sealed class MainForm : Form
         modelBox.SelectedItem = preferred is not null ? preferred : models[0].Label;
     }
 
-    private void OpenAccounts() { using var dialog = new AccountsForm(); dialog.AccountsChanged += async () => { RefreshAuthStatus(); ResetChatUsage(); await ConnectAsync(); }; dialog.ShowDialog(this); RefreshAuthStatus(); }
+    private void OpenAccounts() { accountsPanel.RefreshStatuses(); accountsPanel.Visible = true; accountsPanel.BringToFront(); ApplyThemeTree(accountsPanel); }
+    private void CloseAccounts() { accountsPanel.Visible = false; mainLayout.BringToFront(); RefreshAuthStatus(); }
+    private void ToggleTerminal()
+    {
+        if (terminalPanel.Visible) { CloseTerminal(); return; }
+        terminalPanel.Visible = true; mainLayout.RowStyles[3].Height = Math.Max(190, ClientSize.Height / 3); terminalPanel.Start(settings.ProjectPath);
+        terminalButton.Text = "×  Terminal"; mainLayout.PerformLayout(); ApplyThemeTree(terminalPanel);
+    }
+    private void CloseTerminal()
+    {
+        terminalPanel.Stop(); terminalPanel.Visible = false; mainLayout.RowStyles[3].Height = 0; terminalButton.Text = ">_  Terminal"; mainLayout.PerformLayout();
+    }
     private void RefreshAuthStatus() { var codex = OAuthService.IsConnected("openai-codex"); var copilot = OAuthService.IsConnected("github-copilot"); authLabel.Text = $"{(codex ? "●" : "○")} Codex   {(copilot ? "●" : "○")} Copilot"; authLabel.ForeColor = codex || copilot ? Theme.Success : Theme.Muted; }
     private void SetBusy(bool value) { sendButton.Visible = !value; stopButton.Visible = value; providerBox.Enabled = !value; modelBox.Enabled = !value; effortBox.Enabled = !value; approvalBox.Enabled = !value; statusLabel.Text = value ? "Working…" : "Ready"; }
     private void SetStatus(string text, bool connected) { statusLabel.Text = (connected ? "●  " : "○  ") + text; statusLabel.ForeColor = connected ? Theme.Success : Theme.Muted; }
@@ -701,7 +740,7 @@ internal sealed class MainForm : Form
 
     private void ToggleTheme()
     {
-        settings.ThemeMode = Theme.IsDark ? "light" : "dark"; Theme.SetMode(settings.ThemeMode); settings.Save(); themeButton.Text = Theme.IsDark ? "☀" : "☾"; ApplyThemeTree(this); Invalidate(true);
+        settings.ThemeMode = Theme.IsDark ? "light" : "dark"; Theme.SetMode(settings.ThemeMode); settings.Save(); themeButton.Text = Theme.IsDark ? "☀" : "☾"; ApplyThemeTree(this); NativeTheme.Apply(this); Invalidate(true);
     }
 
     private static void ApplyThemeTree(Control control)
@@ -710,16 +749,16 @@ internal sealed class MainForm : Form
         control.ForeColor = tag is "muted" or "response-meta" or "transparent-muted" ? Theme.Muted : Theme.Text;
         control.BackColor = tag switch
         {
-            "sidebar" => Theme.Sidebar, "surface" or "composer" => Theme.Surface,
+            "sidebar" or "sidebar-selected" => Theme.Sidebar, "surface" or "composer" => Theme.Surface, "terminal" => Theme.Terminal, "terminal-input" => Theme.TerminalInput,
             "bubble-assistant" => Theme.AssistantBubble, "bubble-user" => Theme.UserBubble, "accent" => Theme.Accent,
             "transparent-muted" => Color.Transparent,
-            "muted" or "response-meta" => control.Parent?.BackColor ?? Theme.Background,
-            _ => Theme.Background
+            "muted" or "response-meta" or "text" => control.Parent?.BackColor ?? Theme.Background,
+            _ => control is Label ? control.Parent?.BackColor ?? Theme.Background : Theme.Background
         };
         if (control is ModernButton button)
         {
-            button.NormalColor = tag == "accent" ? Theme.Accent : tag == "sidebar" ? Theme.Sidebar : Theme.Surface;
-            button.HoverColor = tag == "accent" ? Theme.AccentHover : Theme.SurfaceHover; button.BorderColor = tag == "sidebar" ? Theme.Sidebar : Theme.Border;
+            button.NormalColor = tag == "accent" ? Theme.Accent : tag == "sidebar-selected" ? Theme.SurfaceHover : tag == "delete-chat" ? Theme.SurfaceHover : tag == "sidebar" ? Theme.Sidebar : Theme.Surface;
+            button.HoverColor = tag == "accent" ? Theme.AccentHover : tag == "delete-chat" ? Color.FromArgb(115, 52, 57) : Theme.SurfaceHover; button.BorderColor = tag is "sidebar" or "sidebar-selected" or "delete-chat" ? Theme.Sidebar : Theme.Border;
             button.ForeColor = tag == "accent" ? Color.White : tag == "tool-error" ? Color.FromArgb(225, 92, 92) : tag == "muted" ? Theme.Muted : Theme.Text; button.Invalidate();
         }
         if (control is ModernDropdown dropdown) dropdown.Invalidate();

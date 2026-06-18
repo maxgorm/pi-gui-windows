@@ -4,7 +4,7 @@ internal static class Theme
 {
     public static bool IsDark { get; private set; } = true;
     public static Color Background => IsDark ? Color.FromArgb(18, 19, 22) : Color.FromArgb(249, 250, 252);
-    public static Color Sidebar => IsDark ? Color.FromArgb(23, 24, 28) : Color.FromArgb(241, 243, 247);
+    public static Color Sidebar => Background;
     public static Color Surface => IsDark ? Color.FromArgb(30, 32, 37) : Color.White;
     public static Color SurfaceAlt => IsDark ? Color.FromArgb(35, 37, 43) : Color.FromArgb(246, 247, 250);
     public static Color SurfaceHover => IsDark ? Color.FromArgb(44, 47, 54) : Color.FromArgb(229, 232, 238);
@@ -17,6 +17,8 @@ internal static class Theme
     public static Color AssistantBubble => IsDark ? Color.FromArgb(25, 27, 31) : Color.White;
     public static Color Success => IsDark ? Color.FromArgb(107, 210, 151) : Color.FromArgb(27, 143, 83);
     public static Color Warning => IsDark ? Color.FromArgb(255, 172, 92) : Color.FromArgb(201, 103, 18);
+    public static Color Terminal => IsDark ? Color.FromArgb(14, 15, 18) : Color.FromArgb(246, 247, 250);
+    public static Color TerminalInput => IsDark ? Color.FromArgb(24, 26, 30) : Color.White;
     public static readonly Font Ui = new("Segoe UI", 10F);
     public static readonly Font Small = new("Segoe UI", 9F);
     public static readonly Font Mono = new("Cascadia Mono", 9F);

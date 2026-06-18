@@ -9,6 +9,8 @@ A lightweight native Windows desktop interface for the [pi agentic coding harnes
 - GitHub Copilot models: GPT-5.3 Codex, GPT-5.2 Codex, and Claude Opus 4.8
 - Low, medium, high, and xhigh reasoning controls; defaults to GPT-5.5 on medium
 - Native project-folder picker and remembered recent projects
+- Light and dark themes with modern rounded controls
+- Approval policies for mutating or potentially unsafe tool actions
 - Streaming responses, tool activity, stop control, persistent pi sessions, and new chats
 - Paste screenshots directly from the clipboard
 - Attach or drag-and-drop images and local files
@@ -37,6 +39,7 @@ Pi stores and refreshes OAuth credentials in its standard `%USERPROFILE%\.pi\age
 
 - Pick a project from the top-left folder control.
 - Select Codex or GitHub Copilot, then choose one of that provider's models and a reasoning level.
+- Choose an approval policy beside the model controls: **Ask for approval**, **Approve for me**, **Full access**, or **Custom**.
 - Press Enter to send or Shift+Enter for a new line.
 - Paste an image with Ctrl+V, click **Attach**, or drop files onto the window.
 - Attached images are sent as multimodal input. Other files are supplied to the local agent as exact file paths so it can inspect them with its tools.

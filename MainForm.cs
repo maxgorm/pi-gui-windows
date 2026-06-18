@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Text.Json;
 
 namespace PiGUI;
@@ -7,109 +6,113 @@ internal sealed class MainForm : Form
 {
     private readonly AppSettings settings = AppSettings.Load();
     private readonly PiRpcClient rpc = new();
-    private readonly FlowLayoutPanel transcript = new();
-    private readonly FlowLayoutPanel attachmentBar = new();
-    private readonly FlowLayoutPanel recentProjects = new();
-    private readonly ComposerBox composer = new();
-    private readonly ComboBox providerBox = new();
-    private readonly ComboBox modelBox = new();
-    private readonly ComboBox effortBox = new();
-    private readonly Button projectButton = new();
-    private readonly Button sendButton = new();
-    private readonly Button stopButton = new();
-    private readonly Label statusLabel = new();
-    private readonly Label authLabel = new();
+    private readonly FlowLayoutPanel transcript = new() { Tag = "background" };
+    private readonly FlowLayoutPanel attachmentBar = new() { Tag = "surface" };
+    private readonly FlowLayoutPanel recentProjects = new() { Tag = "sidebar" };
+    private readonly ComposerBox composer = new() { Tag = "composer" };
+    private readonly ModernDropdown providerBox = new();
+    private readonly ModernDropdown modelBox = new();
+    private readonly ModernDropdown effortBox = new();
+    private readonly ModernDropdown approvalBox = new();
+    private readonly ModernButton projectButton = new() { Tag = "surface" };
+    private readonly ModernButton sendButton = new() { Tag = "accent" };
+    private readonly ModernButton stopButton = new() { Tag = "surface" };
+    private readonly ModernButton themeButton = new() { Tag = "sidebar" };
+    private readonly RoundedPanel composerCard = new() { Tag = "surface" };
+    private ModernButton? attachButton;
+    private readonly Label statusLabel = new() { Tag = "muted" };
+    private readonly Label authLabel = new() { Tag = "muted" };
     private readonly List<Attachment> attachments = new();
     private RichTextBox? streamingMessage;
     private bool initialized;
 
     public MainForm()
     {
+        Theme.SetMode(settings.ThemeMode);
         Text = "Pi GUI for Windows";
-        MinimumSize = new Size(900, 650);
-        Size = new Size(1180, 780);
+        MinimumSize = new Size(1020, 680);
+        Size = new Size(1240, 820);
         StartPosition = FormStartPosition.CenterScreen;
-        BackColor = Theme.Background;
-        ForeColor = Theme.Text;
         Font = Theme.Ui;
         AllowDrop = true;
-
         BuildLayout();
         WireEvents();
         PopulateSettings();
-        Shown += async (_, _) => await ConnectAsync();
+        ApplyThemeTree(this);
+        Shown += async (_, _) => { PositionComposerControls(); await ConnectAsync(); };
         FormClosing += (_, _) => { settings.Save(); rpc.DisposeAsync().AsTask().GetAwaiter().GetResult(); };
     }
 
     private void BuildLayout()
     {
-        var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, BackColor = Theme.Background };
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 230));
+        var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Tag = "background" };
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 250));
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         Controls.Add(root);
 
-        var sidebar = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Sidebar, Padding = new Padding(14) };
+        var sidebar = new Panel { Dock = DockStyle.Fill, Padding = new Padding(14), Tag = "sidebar" };
         root.Controls.Add(sidebar, 0, 0);
-        var logo = new Label { Text = "π  PI GUI", AutoSize = true, Font = new Font("Segoe UI Semibold", 14), ForeColor = Theme.Text, Location = new Point(15, 18) };
-        sidebar.Controls.Add(logo);
-        var newChat = MakeButton("＋  New chat", 42);
-        newChat.Location = new Point(14, 62); newChat.Width = 200;
-        newChat.Click += async (_, _) => await NewChatAsync();
-        sidebar.Controls.Add(newChat);
-        var projectsTitle = new Label { Text = "PROJECTS", AutoSize = true, ForeColor = Theme.Muted, Font = new Font("Segoe UI Semibold", 8), Location = new Point(17, 122) };
-        sidebar.Controls.Add(projectsTitle);
-        recentProjects.Location = new Point(8, 145); recentProjects.Width = 214; recentProjects.Height = 360;
-        recentProjects.FlowDirection = FlowDirection.TopDown; recentProjects.WrapContents = false; recentProjects.AutoScroll = true; recentProjects.BackColor = Theme.Sidebar;
+        sidebar.Controls.Add(new Label { Text = "π  Pi for Windows", AutoSize = true, Font = new Font("Segoe UI Semibold", 13), Location = new Point(19, 20), Tag = "text" });
+        themeButton.Text = Theme.IsDark ? "☀" : "☾"; themeButton.Font = new Font("Segoe UI Symbol", 12); themeButton.Location = new Point(201, 13); themeButton.Size = new Size(34, 34); themeButton.DrawBorder = false;
+        themeButton.Click += (_, _) => ToggleTheme(); sidebar.Controls.Add(themeButton);
+
+        var newChat = MakeButton("＋   New thread", 42, "sidebar");
+        newChat.Location = new Point(14, 66); newChat.Width = 220; newChat.TextAlign = ContentAlignment.MiddleLeft; newChat.Padding = new Padding(12, 0, 0, 0);
+        newChat.Click += async (_, _) => await NewChatAsync(); sidebar.Controls.Add(newChat);
+        sidebar.Controls.Add(new Label { Text = "WORKSPACES", AutoSize = true, Font = new Font("Segoe UI Semibold", 8), Location = new Point(20, 130), Tag = "muted" });
+        recentProjects.Location = new Point(10, 153); recentProjects.Width = 228; recentProjects.Height = 410; recentProjects.FlowDirection = FlowDirection.TopDown; recentProjects.WrapContents = false; recentProjects.AutoScroll = true;
         sidebar.Controls.Add(recentProjects);
 
-        var connect = MakeButton("Accounts + sign-in", 38);
-        connect.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom;
-        connect.Location = new Point(14, sidebar.Height - 86); connect.Width = 200;
-        connect.Click += (_, _) => OpenAccounts();
-        sidebar.Controls.Add(connect);
-        sidebar.Resize += (_, _) => { connect.Top = sidebar.ClientSize.Height - 58; authLabel.Top = connect.Top - 27; };
-        authLabel.AutoSize = true; authLabel.ForeColor = Theme.Muted; authLabel.Location = new Point(18, 600);
-        sidebar.Controls.Add(authLabel);
+        var accounts = MakeButton("⚙   Accounts + settings", 40, "sidebar");
+        accounts.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom; accounts.Width = 220; accounts.TextAlign = ContentAlignment.MiddleLeft; accounts.Padding = new Padding(11, 0, 0, 0);
+        accounts.Click += (_, _) => OpenAccounts(); sidebar.Controls.Add(accounts);
+        authLabel.AutoSize = true; authLabel.Font = Theme.Small; sidebar.Controls.Add(authLabel);
+        void PositionSidebarFooter() { accounts.Top = sidebar.ClientSize.Height - 58; authLabel.Location = new Point(20, accounts.Top - 30); }
+        sidebar.Resize += (_, _) => PositionSidebarFooter(); PositionSidebarFooter();
 
-        var main = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, ColumnCount = 1, Padding = new Padding(0), BackColor = Theme.Background };
-        main.RowStyles.Add(new RowStyle(SizeType.Absolute, 62));
-        main.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        main.RowStyles.Add(new RowStyle(SizeType.Absolute, 192));
+        var main = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, ColumnCount = 1, Tag = "background" };
+        main.RowStyles.Add(new RowStyle(SizeType.Absolute, 66)); main.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); main.RowStyles.Add(new RowStyle(SizeType.Absolute, 205));
         root.Controls.Add(main, 1, 0);
 
-        var toolbar = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Background, Padding = new Padding(18, 12, 18, 8) };
+        var toolbar = new Panel { Dock = DockStyle.Fill, Padding = new Padding(24, 13, 24, 8), Tag = "background" };
         main.Controls.Add(toolbar, 0, 0);
-        projectButton.TextAlign = ContentAlignment.MiddleLeft; projectButton.AutoEllipsis = true;
-        StyleButton(projectButton); projectButton.Location = new Point(18, 12); projectButton.Size = new Size(285, 38);
+        projectButton.TextAlign = ContentAlignment.MiddleLeft; projectButton.AutoEllipsis = true; projectButton.Padding = new Padding(12, 0, 0, 0); projectButton.Location = new Point(24, 13); projectButton.Size = new Size(305, 40);
         toolbar.Controls.Add(projectButton);
-        providerBox.DropDownStyle = ComboBoxStyle.DropDownList; StyleCombo(providerBox); providerBox.Location = new Point(320, 12); providerBox.Size = new Size(145, 38);
-        toolbar.Controls.Add(providerBox);
-        modelBox.DropDownStyle = ComboBoxStyle.DropDownList; StyleCombo(modelBox); modelBox.Location = new Point(475, 12); modelBox.Size = new Size(145, 38);
-        toolbar.Controls.Add(modelBox);
-        effortBox.DropDownStyle = ComboBoxStyle.DropDownList; StyleCombo(effortBox); effortBox.Location = new Point(630, 12); effortBox.Size = new Size(105, 38);
-        toolbar.Controls.Add(effortBox);
-        statusLabel.AutoSize = true; statusLabel.ForeColor = Theme.Muted; statusLabel.Location = new Point(750, 22); statusLabel.Text = "Starting…";
-        toolbar.Controls.Add(statusLabel);
+        statusLabel.AutoSize = true; statusLabel.Location = new Point(348, 25); toolbar.Controls.Add(statusLabel);
 
-        transcript.Dock = DockStyle.Fill; transcript.AutoScroll = true; transcript.FlowDirection = FlowDirection.TopDown; transcript.WrapContents = false;
-        transcript.BackColor = Theme.Background; transcript.Padding = new Padding(34, 20, 34, 20);
+        transcript.Dock = DockStyle.Fill; transcript.AutoScroll = true; transcript.FlowDirection = FlowDirection.TopDown; transcript.WrapContents = false; transcript.Padding = new Padding(56, 24, 56, 24);
         main.Controls.Add(transcript, 0, 1);
 
-        var composerHost = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Background, Padding = new Padding(32, 10, 32, 24) };
+        var composerHost = new Panel { Dock = DockStyle.Fill, Padding = new Padding(50, 10, 50, 24), Tag = "background" };
         main.Controls.Add(composerHost, 0, 2);
-        var composerCard = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Surface, Padding = new Padding(12) };
+        composerCard.Dock = DockStyle.Fill; composerCard.Padding = new Padding(14); composerCard.Radius = 16; composerCard.BorderWidth = 1;
         composerHost.Controls.Add(composerCard);
-        attachmentBar.Dock = DockStyle.Top; attachmentBar.Height = 34; attachmentBar.BackColor = Theme.Surface; attachmentBar.WrapContents = false; attachmentBar.AutoScroll = true;
-        composerCard.Controls.Add(attachmentBar);
-        composer.BorderStyle = BorderStyle.None; composer.BackColor = Theme.Surface; composer.ForeColor = Theme.Text; composer.Font = new Font("Segoe UI", 11);
-        composer.Location = new Point(14, 43); composer.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom;
-        composer.Size = new Size(composerCard.Width - 28, 66); composerCard.Controls.Add(composer);
-        var attachButton = MakeButton("＋ Attach", 34); attachButton.Anchor = AnchorStyles.Left | AnchorStyles.Bottom; attachButton.Location = new Point(12, 116); attachButton.Width = 92;
-        attachButton.Click += (_, _) => ChooseFiles(); composerCard.Controls.Add(attachButton);
-        sendButton.Text = "Send  ↑"; StyleAccentButton(sendButton); sendButton.Anchor = AnchorStyles.Right | AnchorStyles.Bottom; sendButton.Size = new Size(92, 36); sendButton.Location = new Point(composerCard.Width - 104, 115); composerCard.Controls.Add(sendButton);
-        stopButton.Text = "Stop  ■"; StyleButton(stopButton); stopButton.Anchor = AnchorStyles.Right | AnchorStyles.Bottom; stopButton.Size = new Size(92, 36); stopButton.Location = sendButton.Location; stopButton.Visible = false; composerCard.Controls.Add(stopButton);
-        composerCard.Resize += (_, _) => { composer.Width = composerCard.ClientSize.Width - 28; composer.Height = composerCard.ClientSize.Height - 94; sendButton.Left = composerCard.ClientSize.Width - 104; stopButton.Left = sendButton.Left; attachButton.Top = composerCard.ClientSize.Height - 48; sendButton.Top = attachButton.Top; stopButton.Top = attachButton.Top; };
+        attachmentBar.Dock = DockStyle.Top; attachmentBar.Height = 34; attachmentBar.WrapContents = false; attachmentBar.AutoScroll = true; composerCard.Controls.Add(attachmentBar);
+        composer.BorderStyle = BorderStyle.None; composer.Font = new Font("Segoe UI", 11); composer.Location = new Point(17, 43); composer.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom; composerCard.Controls.Add(composer);
+
+        attachButton = MakeButton("＋", 38, "surface"); attachButton.Font = new Font("Segoe UI", 14); attachButton.Anchor = AnchorStyles.Left | AnchorStyles.Bottom; attachButton.Width = 40; attachButton.Click += (_, _) => ChooseFiles(); composerCard.Controls.Add(attachButton);
+        SetupCombo(providerBox, 108); SetupCombo(modelBox, 132); SetupCombo(effortBox, 90); SetupCombo(approvalBox, 144);
+        composerCard.Controls.Add(providerBox); composerCard.Controls.Add(modelBox); composerCard.Controls.Add(effortBox); composerCard.Controls.Add(approvalBox);
+
+        sendButton.Text = "↑"; sendButton.Font = new Font("Segoe UI Semibold", 15); sendButton.Anchor = AnchorStyles.Right | AnchorStyles.Bottom; sendButton.Size = new Size(44, 40); sendButton.Radius = 11; composerCard.Controls.Add(sendButton);
+        stopButton.Text = "■"; stopButton.Anchor = AnchorStyles.Right | AnchorStyles.Bottom; stopButton.Size = new Size(44, 40); stopButton.Radius = 11; stopButton.Visible = false; composerCard.Controls.Add(stopButton);
+        composerCard.Resize += (_, _) => PositionComposerControls();
     }
+
+    private void PositionComposerControls()
+    {
+        if (attachButton is null) return;
+        composer.Size = new Size(Math.Max(100, composerCard.ClientSize.Width - 34), Math.Max(45, composerCard.ClientSize.Height - 100));
+        var y = Math.Max(8, composerCard.ClientSize.Height - 54); var x = 14;
+        attachButton.Location = new Point(x, y); x += 48;
+        providerBox.Location = new Point(x, y + 4); x += providerBox.Width + 8;
+        modelBox.Location = new Point(x, y + 4); x += modelBox.Width + 8;
+        effortBox.Location = new Point(x, y + 4); x += effortBox.Width + 8;
+        approvalBox.Location = new Point(x, y + 4);
+        sendButton.Location = new Point(composerCard.ClientSize.Width - 58, y); stopButton.Location = sendButton.Location;
+    }
+
+    private static void SetupCombo(ModernDropdown combo, int width) { combo.Anchor = AnchorStyles.Left | AnchorStyles.Bottom; combo.Size = new Size(width, 32); combo.Tag = "surface"; }
 
     private void WireEvents()
     {
@@ -120,17 +123,11 @@ internal sealed class MainForm : Form
         providerBox.SelectedIndexChanged += async (_, _) => await ChangeProviderAsync();
         modelBox.SelectedIndexChanged += async (_, _) => await ChangeModelAsync();
         effortBox.SelectedIndexChanged += async (_, _) => await ChangeEffortAsync();
+        approvalBox.SelectedIndexChanged += async (_, _) => await ChangeApprovalAsync();
         sendButton.Click += async (_, _) => await SendAsync();
         stopButton.Click += async (_, _) => { try { await rpc.SendAsync(new { type = "abort" }); } catch { } };
-        composer.KeyDown += async (_, e) =>
-        {
-            if (e.KeyCode == Keys.Enter && !e.Shift)
-            {
-                e.SuppressKeyPress = true;
-                await SendAsync();
-            }
-        };
-        composer.ImagePasted += image => AddClipboardImage(image);
+        composer.KeyDown += async (_, e) => { if (e.KeyCode == Keys.Enter && !e.Shift) { e.SuppressKeyPress = true; await SendAsync(); } };
+        composer.ImagePasted += AddClipboardImage;
         DragEnter += (_, e) => { if (e.Data?.GetDataPresent(DataFormats.FileDrop) == true) e.Effect = DragDropEffects.Copy; };
         DragDrop += (_, e) => { if (e.Data?.GetData(DataFormats.FileDrop) is string[] files) AddFiles(files); };
         transcript.Resize += (_, _) => ResizeMessages();
@@ -140,15 +137,15 @@ internal sealed class MainForm : Form
     {
         providerBox.Items.AddRange(new object[] { "Codex", "GitHub Copilot" });
         effortBox.Items.AddRange(new object[] { "low", "medium", "high", "xhigh" });
+        approvalBox.Items.AddRange(new object[] { "Ask for approval", "Approve for me", "Full access", "Custom" });
+        approvalBox.Descriptions["Ask for approval"] = "Confirm every action that changes your project";
+        approvalBox.Descriptions["Approve for me"] = "Only interrupt for potentially unsafe actions";
+        approvalBox.Descriptions["Full access"] = "Allow tools without confirmation";
+        approvalBox.Descriptions["Custom"] = "Use a conservative custom policy";
         providerBox.SelectedItem = settings.Provider == "github-copilot" ? "GitHub Copilot" : "Codex";
-        PopulateModels(settings.Model);
-        effortBox.SelectedItem = settings.Effort;
+        PopulateModels(settings.Model); effortBox.SelectedItem = settings.Effort; approvalBox.SelectedItem = ApprovalLabel(settings.ApprovalMode);
         if (!Directory.Exists(settings.ProjectPath)) settings.ProjectPath = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        projectButton.Text = $"▣  {Path.GetFileName(settings.ProjectPath)}     ⌄";
-        RefreshRecentProjects();
-        RefreshAuthStatus();
-        AddWelcome();
-        initialized = true;
+        UpdateProjectLabel(); RefreshRecentProjects(); RefreshAuthStatus(); AddWelcome(); initialized = true;
     }
 
     private async Task ConnectAsync()
@@ -156,38 +153,31 @@ internal sealed class MainForm : Form
         SetStatus("Starting pi…", false);
         try
         {
-            await rpc.StartAsync(settings.ProjectPath, ProviderId(), ModelId(), settings.Effort);
+            await rpc.StartAsync(settings.ProjectPath, ProviderId(), ModelId(), settings.Effort, settings.ApprovalMode);
             var connected = OAuthService.IsConnected(ProviderId());
             SetStatus(connected ? "Ready" : $"{providerBox.SelectedItem} sign-in required", connected);
         }
-        catch (Exception ex)
-        {
-            SetStatus("Setup needed", false);
-            AddSystemMessage(ex.Message + "\n\nOpen Accounts + sign-in if this provider is not connected yet.", true);
-        }
+        catch (Exception ex) { SetStatus("Setup needed", false); AddSystemMessage(ex.Message + "\n\nOpen Accounts & settings if this provider is not connected yet.", true); }
         RefreshAuthStatus();
     }
 
     private async Task SendAsync()
     {
-        var text = composer.Text.Trim();
-        if (text.Length == 0 && attachments.Count == 0) return;
+        var text = composer.Text.Trim(); if (text.Length == 0 && attachments.Count == 0) return;
         if (!rpc.IsRunning) { await ConnectAsync(); if (!rpc.IsRunning) return; }
-        var outgoing = attachments.ToList();
-        AddUserMessage(text.Length == 0 ? "[Attachments]" : text, outgoing);
+        var outgoing = attachments.ToList(); AddUserMessage(text.Length == 0 ? "[Attachments]" : text, outgoing);
         composer.Clear(); attachments.Clear(); RefreshAttachments();
-        try { await rpc.PromptAsync(text, outgoing); }
-        catch (Exception ex) { AddSystemMessage(ex.Message, true); SetBusy(false); }
+        try { await rpc.PromptAsync(text, outgoing); } catch (Exception ex) { AddSystemMessage(ex.Message, true); SetBusy(false); }
     }
 
     private void HandleEvent(JsonElement e)
     {
         if (!e.TryGetProperty("type", out var typeNode)) return;
-        var type = typeNode.GetString();
-        switch (type)
+        switch (typeNode.GetString())
         {
             case "agent_start": SetBusy(true); EnsureStreamingMessage(); break;
             case "agent_end": SetBusy(false); FinishStreamingMessage(); break;
+            case "extension_ui_request": _ = HandleExtensionRequestAsync(e); break;
             case "message_update":
                 if (e.TryGetProperty("assistantMessageEvent", out var update) && update.TryGetProperty("type", out var updateType))
                 {
@@ -196,221 +186,183 @@ internal sealed class MainForm : Form
                     else if (updateType.GetString() == "error" && update.TryGetProperty("error", out var error)) AddSystemMessage(error.ToString(), true);
                 }
                 break;
-            case "tool_execution_start":
-                var tool = e.TryGetProperty("toolName", out var toolName) ? toolName.GetString() : "tool";
-                AddToolMessage($"Running {tool}…"); break;
+            case "tool_execution_start": AddToolMessage($"Running {(e.TryGetProperty("toolName", out var tn) ? tn.GetString() : "tool")}…"); break;
             case "tool_execution_end":
-                var endedTool = e.TryGetProperty("toolName", out var endedName) ? endedName.GetString() : "tool";
-                var failed = e.TryGetProperty("isError", out var isError) && isError.GetBoolean();
-                AddToolMessage($"{endedTool} {(failed ? "failed" : "finished")}"); break;
+                var failed = e.TryGetProperty("isError", out var ie) && ie.GetBoolean();
+                AddToolMessage($"{(e.TryGetProperty("toolName", out var en) ? en.GetString() : "tool")} {(failed ? "failed" : "finished")}"); break;
             case "auto_retry_start": statusLabel.Text = "Retrying…"; break;
             case "compaction_start": statusLabel.Text = "Compacting context…"; break;
         }
     }
 
+    private async Task HandleExtensionRequestAsync(JsonElement e)
+    {
+        if (!e.TryGetProperty("method", out var method) || method.GetString() != "confirm") return;
+        var id = e.GetProperty("id").GetString()!;
+        var title = e.TryGetProperty("title", out var t) ? t.GetString() ?? "Approve action?" : "Approve action?";
+        var detail = e.TryGetProperty("message", out var m) ? m.GetString() ?? "" : "";
+        using var dialog = new ApprovalForm(title, detail);
+        dialog.ShowDialog(this);
+        await rpc.SendRawAsync(new { type = "extension_ui_response", id, confirmed = dialog.Approved });
+    }
+
     private void EnsureStreamingMessage()
     {
         if (streamingMessage is not null) return;
-        streamingMessage = CreateMessageBox("", false);
-        transcript.Controls.Add(WrapMessage("PI", streamingMessage, false));
-        ScrollToBottom();
+        streamingMessage = CreateMessageBox("", false); transcript.Controls.Add(WrapMessage("PI", streamingMessage, false)); ScrollToBottom();
     }
 
     private void AppendStream(string text)
     {
-        EnsureStreamingMessage();
-        streamingMessage!.AppendText(text);
-        streamingMessage.Height = Math.Min(800, Math.Max(40, TextRenderer.MeasureText(streamingMessage.Text + "\n", streamingMessage.Font, new Size(streamingMessage.Width, int.MaxValue), TextFormatFlags.WordBreak).Height + 24));
-        ScrollToBottom();
+        EnsureStreamingMessage(); streamingMessage!.AppendText(text); ResizeMessageBox(streamingMessage); ScrollToBottom();
     }
 
-    private void FinishStreamingMessage()
-    {
-        if (streamingMessage is { TextLength: 0 }) streamingMessage.Text = "Done.";
-        streamingMessage = null;
-        statusLabel.Text = "Ready";
-    }
-
-    private void AddWelcome() => AddSystemMessage("What would you like to build?\n\nPi can read and edit files, run commands, and work across the selected project. Paste an image, drop files here, or attach them with the button below.", false);
+    private void FinishStreamingMessage() { if (streamingMessage is { TextLength: 0 }) streamingMessage.Text = "Done."; streamingMessage = null; statusLabel.Text = "Ready"; }
+    private void AddWelcome() => AddSystemMessage("What would you like to build?\n\nPi can read and edit files, run commands, and work across the selected project. Paste an image, drop files here, or attach them below.", false);
 
     private void AddUserMessage(string text, List<Attachment> files)
     {
         var details = files.Count == 0 ? "" : "\n\n" + string.Join("  •  ", files.Select(f => f.Name));
-        var box = CreateMessageBox(text + details, true);
-        transcript.Controls.Add(WrapMessage("YOU", box, true));
-        ScrollToBottom();
+        transcript.Controls.Add(WrapMessage("YOU", CreateMessageBox(text + details, true), true)); ScrollToBottom();
     }
 
     private void AddSystemMessage(string text, bool error)
     {
-        var box = CreateMessageBox(text, false);
-        if (error) box.ForeColor = Color.FromArgb(255, 135, 125);
-        transcript.Controls.Add(WrapMessage(error ? "NOTICE" : "PI", box, false));
-        ScrollToBottom();
+        var box = CreateMessageBox(text, false); if (error) box.ForeColor = Color.FromArgb(225, 92, 92);
+        transcript.Controls.Add(WrapMessage(error ? "NOTICE" : "PI", box, false)); ScrollToBottom();
     }
 
     private void AddToolMessage(string text)
     {
-        var label = new Label { Text = "  ⚙  " + text + "  ", AutoSize = true, ForeColor = Theme.Muted, BackColor = Theme.Surface, Padding = new Padding(5), Margin = new Padding(30, 5, 0, 5), Font = Theme.Small };
-        transcript.Controls.Add(label); ScrollToBottom();
+        var chip = new ModernButton { Text = "⚙  " + text, AutoSize = true, Height = 30, Margin = new Padding(12, 4, 0, 5), Font = Theme.Small, Tag = "surface", Enabled = false };
+        transcript.Controls.Add(chip); ApplyThemeTree(chip); ScrollToBottom();
     }
 
     private Control WrapMessage(string author, RichTextBox box, bool user)
     {
-        var host = new Panel { Width = Math.Max(400, transcript.ClientSize.Width - 90), Height = box.Height + 30, Margin = new Padding(0, 5, 0, 12), BackColor = Theme.Background };
-        var name = new Label { Text = author, ForeColor = Theme.Muted, Font = new Font("Segoe UI Semibold", 8), AutoSize = true, Location = new Point(user ? 115 : 4, 0) };
-        box.Location = new Point(user ? 110 : 0, 23); box.Width = host.Width - (user ? 120 : 20); box.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
-        host.Controls.Add(name); host.Controls.Add(box); return host;
+        var host = new Panel { Width = Math.Max(420, transcript.ClientSize.Width - 115), Height = box.Height + 48, Margin = new Padding(0, 6, 0, 12), Tag = user ? "message-user" : "message-assistant" };
+        var bubbleWidth = Math.Min(760, Math.Max(360, host.Width - 120));
+        var bubble = new RoundedPanel { Width = bubbleWidth, Height = box.Height + 30, Radius = 13, BorderWidth = 1, Tag = user ? "bubble-user" : "bubble-assistant" };
+        bubble.Left = user ? host.Width - bubble.Width - 4 : 4; bubble.Top = 8; bubble.Anchor = user ? AnchorStyles.Top | AnchorStyles.Right : AnchorStyles.Top | AnchorStyles.Left;
+        var name = new Label { Text = author, AutoSize = true, Font = new Font("Segoe UI Semibold", 8), Location = new Point(14, 8), Tag = "muted" };
+        box.Location = new Point(12, 27); box.Width = bubble.Width - 24; box.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+        bubble.Controls.Add(name); bubble.Controls.Add(box); host.Controls.Add(bubble); ApplyThemeTree(host); return host;
     }
 
     private RichTextBox CreateMessageBox(string text, bool user)
     {
-        var width = Math.Max(360, transcript.ClientSize.Width - (user ? 210 : 110));
-        var measured = TextRenderer.MeasureText(text + "\n", Theme.Ui, new Size(width - 24, int.MaxValue), TextFormatFlags.WordBreak);
-        return new RichTextBox
-        {
-            Text = text, ReadOnly = true, BorderStyle = BorderStyle.None, DetectUrls = true, ScrollBars = RichTextBoxScrollBars.None,
-            BackColor = user ? Theme.UserBubble : Theme.Background, ForeColor = Theme.Text, Font = Theme.Ui,
-            Width = width, Height = Math.Min(800, Math.Max(42, measured.Height + 24)), Padding = new Padding(8), TabStop = false
-        };
+        var box = new RichTextBox { Text = text, ReadOnly = true, BorderStyle = BorderStyle.None, DetectUrls = true, ScrollBars = RichTextBoxScrollBars.None, Font = Theme.Ui, Width = 700, TabStop = false, Tag = user ? "bubble-user" : "bubble-assistant" };
+        ResizeMessageBox(box); return box;
     }
 
-    private async Task NewChatAsync()
+    private static void ResizeMessageBox(RichTextBox box)
     {
-        try { if (rpc.IsRunning) await rpc.SendAsync(new { type = "new_session" }); } catch { }
-        transcript.Controls.Clear(); streamingMessage = null; AddWelcome();
+        var measured = TextRenderer.MeasureText(box.Text + "\n", box.Font, new Size(Math.Max(200, box.Width - 12), int.MaxValue), TextFormatFlags.WordBreak);
+        box.Height = Math.Min(700, Math.Max(38, measured.Height + 10));
+        if (box.Parent is RoundedPanel bubble) { bubble.Height = box.Height + 38; if (bubble.Parent is Panel host) host.Height = bubble.Height + 16; }
     }
+
+    private async Task NewChatAsync() { try { if (rpc.IsRunning) await rpc.SendAsync(new { type = "new_session" }); } catch { } transcript.Controls.Clear(); streamingMessage = null; AddWelcome(); }
 
     private void ChooseProject()
     {
-        using var dialog = new FolderBrowserDialog { Description = "Choose the project pi should work in", SelectedPath = settings.ProjectPath, UseDescriptionForTitle = true };
-        if (dialog.ShowDialog(this) != DialogResult.OK) return;
-        SwitchProject(dialog.SelectedPath);
+        using var dialog = new FolderBrowserDialog { Description = "Choose the workspace Pi should work in", SelectedPath = settings.ProjectPath, UseDescriptionForTitle = true };
+        if (dialog.ShowDialog(this) == DialogResult.OK) SwitchProject(dialog.SelectedPath);
     }
 
     private async void SwitchProject(string path)
     {
-        settings.RememberProject(path); projectButton.Text = $"▣  {Path.GetFileName(path)}     ⌄"; RefreshRecentProjects();
-        transcript.Controls.Clear(); AddWelcome(); await ConnectAsync();
+        settings.RememberProject(path); UpdateProjectLabel(); RefreshRecentProjects(); transcript.Controls.Clear(); AddWelcome(); await ConnectAsync();
     }
+
+    private void UpdateProjectLabel() => projectButton.Text = $"📁  {DisplayFolder(settings.ProjectPath)}    ▾";
+    private static string DisplayFolder(string path) => Path.GetFileName(path) is { Length: > 0 } name ? name : path;
 
     private void RefreshRecentProjects()
     {
         recentProjects.Controls.Clear();
         foreach (var path in settings.RecentProjects.Prepend(settings.ProjectPath).Distinct(StringComparer.OrdinalIgnoreCase))
         {
-            var button = MakeButton("▣  " + (Path.GetFileName(path) is { Length: > 0 } name ? name : path), 35);
-            button.Width = 195; button.TextAlign = ContentAlignment.MiddleLeft; button.Tag = path; button.AutoEllipsis = true;
+            var button = MakeButton("📁  " + DisplayFolder(path), 37, "sidebar"); button.Width = 214; button.TextAlign = ContentAlignment.MiddleLeft; button.Padding = new Padding(10, 0, 0, 0); button.Tag = path; button.AutoEllipsis = true;
             button.Click += (_, _) => SwitchProject((string)button.Tag); recentProjects.Controls.Add(button);
         }
+        ApplyThemeTree(recentProjects);
     }
 
-    private void ChooseFiles()
-    {
-        using var dialog = new OpenFileDialog { Multiselect = true, Title = "Attach images or files", Filter = "All files|*.*" };
-        if (dialog.ShowDialog(this) == DialogResult.OK) AddFiles(dialog.FileNames);
-    }
-
-    private void AddFiles(IEnumerable<string> files)
-    {
-        foreach (var file in files.Where(File.Exists))
-        {
-            var isImage = new[] { ".png", ".jpg", ".jpeg", ".webp", ".gif" }.Contains(Path.GetExtension(file).ToLowerInvariant());
-            if (!attachments.Any(a => string.Equals(a.Path, file, StringComparison.OrdinalIgnoreCase))) attachments.Add(new Attachment(file, isImage));
-        }
-        RefreshAttachments();
-    }
-
-    private void AddClipboardImage(Image image)
-    {
-        var directory = Path.Combine(Path.GetTempPath(), "PiGUI", "attachments"); Directory.CreateDirectory(directory);
-        var path = Path.Combine(directory, $"pasted-{DateTime.Now:yyyyMMdd-HHmmssfff}.png"); image.Save(path, System.Drawing.Imaging.ImageFormat.Png); image.Dispose();
-        AddFiles(new[] { path });
-    }
+    private void ChooseFiles() { using var dialog = new OpenFileDialog { Multiselect = true, Title = "Attach images or files", Filter = "All files|*.*" }; if (dialog.ShowDialog(this) == DialogResult.OK) AddFiles(dialog.FileNames); }
+    private void AddFiles(IEnumerable<string> files) { foreach (var file in files.Where(File.Exists)) { var image = new[] { ".png", ".jpg", ".jpeg", ".webp", ".gif" }.Contains(Path.GetExtension(file).ToLowerInvariant()); if (!attachments.Any(a => string.Equals(a.Path, file, StringComparison.OrdinalIgnoreCase))) attachments.Add(new Attachment(file, image)); } RefreshAttachments(); }
+    private void AddClipboardImage(Image image) { var dir = Path.Combine(Path.GetTempPath(), "PiGUI", "attachments"); Directory.CreateDirectory(dir); var path = Path.Combine(dir, $"pasted-{DateTime.Now:yyyyMMdd-HHmmssfff}.png"); image.Save(path, System.Drawing.Imaging.ImageFormat.Png); image.Dispose(); AddFiles(new[] { path }); }
 
     private void RefreshAttachments()
     {
         attachmentBar.Controls.Clear();
         foreach (var item in attachments.ToList())
         {
-            var chip = MakeButton((item.IsImage ? "▧  " : "▤  ") + item.Name + "  ×", 29); chip.AutoSize = true; chip.Tag = item;
+            var chip = MakeButton((item.IsImage ? "▧  " : "▤  ") + item.Name + "  ×", 29, "surface"); chip.AutoSize = true; chip.Tag = item;
             chip.Click += (_, _) => { attachments.Remove((Attachment)chip.Tag); RefreshAttachments(); }; attachmentBar.Controls.Add(chip);
         }
     }
 
-    private async Task ChangeModelAsync()
-    {
-        if (modelBox.SelectedItem is null) return; settings.Model = ModelId(); settings.Save();
-        if (initialized && rpc.IsRunning) try { await rpc.SendAsync(new { type = "set_model", provider = ProviderId(), modelId = settings.Model }); } catch (Exception ex) { AddSystemMessage(ex.Message, true); }
-    }
-
-    private async Task ChangeProviderAsync()
-    {
-        if (providerBox.SelectedItem is null) return;
-        settings.Provider = ProviderId();
-        var preferred = settings.Provider == "github-copilot" ? "gpt-5.3-codex" : "gpt-5.5";
-        PopulateModels(preferred); settings.Model = ModelId(); settings.Save(); RefreshAuthStatus();
-        if (initialized) await ConnectAsync();
-    }
-
-    private async Task ChangeEffortAsync()
-    {
-        if (effortBox.SelectedItem is not string effort) return; settings.Effort = effort; settings.Save();
-        if (rpc.IsRunning) try { await rpc.SendAsync(new { type = "set_thinking_level", level = effort }); } catch (Exception ex) { AddSystemMessage(ex.Message, true); }
-    }
+    private async Task ChangeModelAsync() { if (modelBox.SelectedItem is null) return; settings.Model = ModelId(); settings.Save(); if (initialized && rpc.IsRunning) try { await rpc.SendAsync(new { type = "set_model", provider = ProviderId(), modelId = settings.Model }); } catch (Exception ex) { AddSystemMessage(ex.Message, true); } }
+    private async Task ChangeProviderAsync() { if (providerBox.SelectedItem is null) return; settings.Provider = ProviderId(); PopulateModels(settings.Provider == "github-copilot" ? "gpt-5.3-codex" : "gpt-5.5"); settings.Model = ModelId(); settings.Save(); RefreshAuthStatus(); if (initialized) await ConnectAsync(); }
+    private async Task ChangeEffortAsync() { if (effortBox.SelectedItem is not string effort) return; settings.Effort = effort; settings.Save(); if (rpc.IsRunning) try { await rpc.SendAsync(new { type = "set_thinking_level", level = effort }); } catch (Exception ex) { AddSystemMessage(ex.Message, true); } }
+    private async Task ChangeApprovalAsync() { if (approvalBox.SelectedItem is null) return; settings.ApprovalMode = ApprovalId(approvalBox.SelectedItem.ToString()!); settings.Save(); if (initialized) await ConnectAsync(); }
 
     private string ProviderId() => providerBox.SelectedItem?.ToString() == "GitHub Copilot" ? "github-copilot" : "openai-codex";
-    private string ModelId() => modelBox.SelectedItem?.ToString() switch
-    {
-        "GPT-5.4" => "gpt-5.4", "GPT-5.4 mini" => "gpt-5.4-mini", "GPT-5.3 Codex" => "gpt-5.3-codex",
-        "GPT-5.2 Codex" => "gpt-5.2-codex", "Claude Opus 4.8" => "claude-opus-4.8", _ => "gpt-5.5"
-    };
+    private string ModelId() => modelBox.SelectedItem?.ToString() switch { "GPT-5.4" => "gpt-5.4", "GPT-5.4 mini" => "gpt-5.4-mini", "GPT-5.3 Codex" => "gpt-5.3-codex", "GPT-5.2 Codex" => "gpt-5.2-codex", "Claude Opus 4.8" => "claude-opus-4.8", _ => "gpt-5.5" };
+    private static string ApprovalId(string label) => label switch { "Approve for me" => "auto", "Full access" => "full", "Custom" => "custom", _ => "ask" };
+    private static string ApprovalLabel(string id) => id switch { "auto" => "Approve for me", "full" => "Full access", "custom" => "Custom", _ => "Ask for approval" };
 
     private void PopulateModels(string preferredId)
     {
         modelBox.Items.Clear();
-        if (ProviderId() == "github-copilot") modelBox.Items.AddRange(new object[] { "GPT-5.3 Codex", "GPT-5.2 Codex", "Claude Opus 4.8" });
-        else modelBox.Items.AddRange(new object[] { "GPT-5.5", "GPT-5.4", "GPT-5.4 mini" });
-        var friendly = preferredId switch
-        {
-            "gpt-5.4" => "GPT-5.4", "gpt-5.4-mini" => "GPT-5.4 mini", "gpt-5.3-codex" => "GPT-5.3 Codex",
-            "gpt-5.2-codex" => "GPT-5.2 Codex", "claude-opus-4.8" => "Claude Opus 4.8", _ => "GPT-5.5"
-        };
+        if (ProviderId() == "github-copilot") modelBox.Items.AddRange(new object[] { "GPT-5.3 Codex", "GPT-5.2 Codex", "Claude Opus 4.8" }); else modelBox.Items.AddRange(new object[] { "GPT-5.5", "GPT-5.4", "GPT-5.4 mini" });
+        var friendly = preferredId switch { "gpt-5.4" => "GPT-5.4", "gpt-5.4-mini" => "GPT-5.4 mini", "gpt-5.3-codex" => "GPT-5.3 Codex", "gpt-5.2-codex" => "GPT-5.2 Codex", "claude-opus-4.8" => "Claude Opus 4.8", _ => "GPT-5.5" };
         modelBox.SelectedItem = modelBox.Items.Contains(friendly) ? friendly : modelBox.Items[0];
     }
 
-    private void OpenAccounts()
-    {
-        using var dialog = new AccountsForm();
-        dialog.AccountsChanged += async () => { RefreshAuthStatus(); await ConnectAsync(); };
-        dialog.ShowDialog(this); RefreshAuthStatus();
-    }
-
-    private void RefreshAuthStatus()
-    {
-        var codex = OAuthService.IsConnected("openai-codex"); var copilot = OAuthService.IsConnected("github-copilot");
-        authLabel.Text = $"{(codex ? "●" : "○")} Codex   {(copilot ? "●" : "○")} Copilot";
-        authLabel.ForeColor = codex || copilot ? Color.FromArgb(105, 205, 145) : Theme.Muted;
-    }
-
-    private void SetBusy(bool value)
-    {
-        sendButton.Visible = !value; stopButton.Visible = value; providerBox.Enabled = !value; modelBox.Enabled = !value; effortBox.Enabled = !value;
-        statusLabel.Text = value ? "Working…" : "Ready";
-    }
-
-    private void SetStatus(string text, bool connected) { statusLabel.Text = (connected ? "●  " : "○  ") + text; statusLabel.ForeColor = connected ? Color.FromArgb(105, 205, 145) : Theme.Muted; }
+    private void OpenAccounts() { using var dialog = new AccountsForm(); dialog.AccountsChanged += async () => { RefreshAuthStatus(); await ConnectAsync(); }; dialog.ShowDialog(this); RefreshAuthStatus(); }
+    private void RefreshAuthStatus() { var codex = OAuthService.IsConnected("openai-codex"); var copilot = OAuthService.IsConnected("github-copilot"); authLabel.Text = $"{(codex ? "●" : "○")} Codex   {(copilot ? "●" : "○")} Copilot"; authLabel.ForeColor = codex || copilot ? Theme.Success : Theme.Muted; }
+    private void SetBusy(bool value) { sendButton.Visible = !value; stopButton.Visible = value; providerBox.Enabled = !value; modelBox.Enabled = !value; effortBox.Enabled = !value; approvalBox.Enabled = !value; statusLabel.Text = value ? "Working…" : "Ready"; }
+    private void SetStatus(string text, bool connected) { statusLabel.Text = (connected ? "●  " : "○  ") + text; statusLabel.ForeColor = connected ? Theme.Success : Theme.Muted; }
     private void ShowRuntimeError(string text) { if (text.Contains("error", StringComparison.OrdinalIgnoreCase) || text.Contains("No API key", StringComparison.OrdinalIgnoreCase)) statusLabel.Text = "Runtime notice"; }
     private void Ui(Action action) { if (IsDisposed) return; if (InvokeRequired) BeginInvoke(action); else action(); }
-    private void ScrollToBottom()
-    {
-        if (!IsHandleCreated) return;
-        BeginInvoke(() => { if (!IsDisposed && transcript.Controls.Count > 0) transcript.ScrollControlIntoView(transcript.Controls[transcript.Controls.Count - 1]); });
-    }
-    private void ResizeMessages() { foreach (Control control in transcript.Controls) if (control is Panel panel) panel.Width = Math.Max(400, transcript.ClientSize.Width - 90); }
+    private void ScrollToBottom() { if (!IsHandleCreated) return; BeginInvoke(() => { if (!IsDisposed && transcript.Controls.Count > 0) transcript.ScrollControlIntoView(transcript.Controls[transcript.Controls.Count - 1]); }); }
 
-    private static Button MakeButton(string text, int height) { var b = new Button { Text = text, Height = height, FlatStyle = FlatStyle.Flat, ForeColor = Theme.Text, BackColor = Theme.Sidebar, Font = Theme.Ui, Cursor = Cursors.Hand }; b.FlatAppearance.BorderSize = 0; b.FlatAppearance.MouseOverBackColor = Theme.SurfaceHover; return b; }
-    private static void StyleButton(Button b) { b.FlatStyle = FlatStyle.Flat; b.FlatAppearance.BorderColor = Theme.Border; b.FlatAppearance.MouseOverBackColor = Theme.SurfaceHover; b.BackColor = Theme.Surface; b.ForeColor = Theme.Text; b.Cursor = Cursors.Hand; b.Font = Theme.Ui; }
-    private static void StyleAccentButton(Button b) { StyleButton(b); b.BackColor = Theme.Accent; b.FlatAppearance.BorderColor = Theme.Accent; b.ForeColor = Color.White; }
-    private static void StyleCombo(ComboBox c) { c.BackColor = Theme.Surface; c.ForeColor = Theme.Text; c.FlatStyle = FlatStyle.Flat; c.Font = Theme.Ui; }
+    private void ResizeMessages()
+    {
+        foreach (Control control in transcript.Controls)
+        {
+            if (control is not Panel host || host.Tag?.ToString()?.StartsWith("message-") != true) continue;
+            host.Width = Math.Max(420, transcript.ClientSize.Width - 115);
+            if (host.Controls.OfType<RoundedPanel>().FirstOrDefault() is { } bubble && host.Tag?.ToString() == "message-user") bubble.Left = host.Width - bubble.Width - 4;
+        }
+    }
+
+    private void ToggleTheme()
+    {
+        settings.ThemeMode = Theme.IsDark ? "light" : "dark"; Theme.SetMode(settings.ThemeMode); settings.Save(); themeButton.Text = Theme.IsDark ? "☀" : "☾"; ApplyThemeTree(this); Invalidate(true);
+    }
+
+    private static void ApplyThemeTree(Control control)
+    {
+        var tag = control.Tag?.ToString();
+        control.ForeColor = tag == "muted" ? Theme.Muted : Theme.Text;
+        control.BackColor = tag switch
+        {
+            "sidebar" => Theme.Sidebar, "surface" or "composer" or "bubble-assistant" => Theme.Surface,
+            "bubble-user" => Theme.UserBubble, "accent" => Theme.Accent, _ => Theme.Background
+        };
+        if (control is ModernButton button)
+        {
+            button.NormalColor = tag == "accent" ? Theme.Accent : tag == "sidebar" ? Theme.Sidebar : Theme.Surface;
+            button.HoverColor = tag == "accent" ? Theme.AccentHover : Theme.SurfaceHover; button.BorderColor = tag == "sidebar" ? Theme.Sidebar : Theme.Border; button.ForeColor = tag == "accent" ? Color.White : Theme.Text; button.Invalidate();
+        }
+        if (control is ModernDropdown dropdown) dropdown.Invalidate();
+        if (control is RoundedPanel rounded) { rounded.BorderColor = Theme.Border; rounded.Invalidate(); }
+        foreach (Control child in control.Controls) ApplyThemeTree(child);
+    }
+
+    private static ModernButton MakeButton(string text, int height, string tag)
+        => new() { Text = text, Height = height, ForeColor = Theme.Text, Font = Theme.Ui, Tag = tag, Radius = 9, NormalColor = tag == "sidebar" ? Theme.Sidebar : Theme.Surface, HoverColor = Theme.SurfaceHover, BorderColor = tag == "sidebar" ? Theme.Sidebar : Theme.Border, DrawBorder = tag != "sidebar" };
 }

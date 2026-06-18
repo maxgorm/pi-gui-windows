@@ -9,8 +9,8 @@ internal sealed class AccountsForm : Form
     private readonly Label codexStatus = new();
     private readonly Label copilotStatus = new();
     private readonly Label detail = new();
-    private readonly Button codexButton = new();
-    private readonly Button copilotButton = new();
+    private readonly ModernButton codexButton = new();
+    private readonly ModernButton copilotButton = new();
     private CancellationTokenSource? loginCancellation;
 
     public event Action? AccountsChanged;
@@ -31,18 +31,18 @@ internal sealed class AccountsForm : Form
         RefreshStatuses();
     }
 
-    private void AddProviderRow(string name, string description, string provider, int top, Label status, Button button)
+    private void AddProviderRow(string name, string description, string provider, int top, Label status, ModernButton button)
     {
-        var panel = new Panel { Location = new Point(30, top), Size = new Size(495, 66), BackColor = Theme.Surface };
+        var panel = new RoundedPanel { Location = new Point(30, top), Size = new Size(495, 66), BackColor = Theme.Surface, BorderColor = Theme.Border, Radius = 10 };
         var nameLabel = new Label { Text = name, Font = new Font("Segoe UI Semibold", 11), AutoSize = true, Location = new Point(15, 10) };
         var descriptionLabel = new Label { Text = description, ForeColor = Theme.Muted, AutoSize = true, Location = new Point(16, 37) };
         status.AutoSize = true; status.Location = new Point(275, 24);
-        button.Text = "Connect"; button.Location = new Point(397, 16); button.Size = new Size(82, 34); StyleButton(button);
+        button.Text = "Connect"; button.Location = new Point(397, 16); button.Size = new Size(82, 34); button.NormalColor = Theme.SurfaceHover; button.HoverColor = Theme.Accent; button.BorderColor = Theme.Border; button.ForeColor = Theme.Text; button.Radius = 8;
         button.Click += async (_, _) => await ConnectAsync(provider, button);
         panel.Controls.Add(nameLabel); panel.Controls.Add(descriptionLabel); panel.Controls.Add(status); panel.Controls.Add(button); Controls.Add(panel);
     }
 
-    private async Task ConnectAsync(string provider, Button source)
+    private async Task ConnectAsync(string provider, ModernButton source)
     {
         codexButton.Enabled = copilotButton.Enabled = false; source.Text = "Opening…";
         detail.Text = "Preparing a secure browser sign-in…"; loginCancellation = new CancellationTokenSource();
@@ -96,5 +96,4 @@ internal sealed class AccountsForm : Form
     }
 
     private void Ui(Action action) { if (IsDisposed) return; if (InvokeRequired) BeginInvoke(action); else action(); }
-    private static void StyleButton(Button button) { button.FlatStyle = FlatStyle.Flat; button.BackColor = Theme.SurfaceHover; button.ForeColor = Theme.Text; button.FlatAppearance.BorderColor = Theme.Border; button.Cursor = Cursors.Hand; }
 }

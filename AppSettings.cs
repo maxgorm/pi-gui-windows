@@ -8,6 +8,8 @@ internal sealed class AppSettings
     public string Provider { get; set; } = "openai-codex";
     public string Model { get; set; } = "gpt-5.5";
     public string Effort { get; set; } = "medium";
+    public string ApprovalMode { get; set; } = "ask";
+    public string ThemeMode { get; set; } = "dark";
     public List<string> RecentProjects { get; set; } = new();
 
     private static string DirectoryPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "PiGUI");

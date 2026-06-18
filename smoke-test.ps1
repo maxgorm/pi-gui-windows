@@ -15,4 +15,7 @@ $copilotOutput = $request | node .\node_modules\@earendil-works\pi-coding-agent\
 $copilot = $copilotOutput | Where-Object { $_ -match '"id":"smoke"' } | Select-Object -First 1 | ConvertFrom-Json
 if (-not $copilot.success -or $copilot.data.model.provider -ne 'github-copilot') { throw 'GitHub Copilot RPC smoke test did not succeed.' }
 
-Write-Host 'Build, Codex RPC, and GitHub Copilot RPC smoke tests passed.' -ForegroundColor Green
+node .\approval-smoke.mjs
+if ($LASTEXITCODE -ne 0) { throw 'Approval RPC smoke test failed.' }
+
+Write-Host 'Build, provider RPC, and approval RPC smoke tests passed.' -ForegroundColor Green

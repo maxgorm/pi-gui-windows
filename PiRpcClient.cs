@@ -31,7 +31,7 @@ internal sealed class PiRpcClient : IAsyncDisposable
         }
     }
 
-    public async Task StartAsync(string projectPath, string provider, string model, string effort)
+    public async Task StartAsync(string projectPath, string provider, string model, string effort, string approvalMode)
     {
         await StopAsync();
         if (!File.Exists(RuntimeCliPath))
@@ -55,6 +55,13 @@ internal sealed class PiRpcClient : IAsyncDisposable
         psi.ArgumentList.Add("--model");
         psi.ArgumentList.Add(model);
         psi.ArgumentList.Add("--approve");
+        var approvalExtension = FindApprovalExtension();
+        if (File.Exists(approvalExtension))
+        {
+            psi.ArgumentList.Add("--extension");
+            psi.ArgumentList.Add(approvalExtension);
+            psi.Environment["PI_GUI_APPROVAL_MODE"] = approvalMode;
+        }
 
         process = new Process { StartInfo = psi, EnableRaisingEvents = true };
         process.Exited += (_, _) => Exited?.Invoke();
@@ -98,6 +105,29 @@ internal sealed class PiRpcClient : IAsyncDisposable
             return response;
         }
         finally { pending.TryRemove(id, out _); }
+    }
+
+    public async Task SendRawAsync(object message)
+    {
+        if (!IsRunning || input is null) return;
+        await writeLock.WaitAsync();
+        try
+        {
+            await input.WriteLineAsync(JsonSerializer.Serialize(message));
+            await input.FlushAsync();
+        }
+        finally { writeLock.Release(); }
+    }
+
+    private static string FindApprovalExtension()
+    {
+        var candidates = new[]
+        {
+            Path.Combine(Directory.GetCurrentDirectory(), "pi-gui-approval-extension.ts"),
+            Path.Combine(AppContext.BaseDirectory, "pi-gui-approval-extension.ts"),
+            Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "pi-gui-approval-extension.ts"))
+        };
+        return candidates.FirstOrDefault(File.Exists) ?? candidates[0];
     }
 
     public Task PromptAsync(string message, IEnumerable<Attachment> attachments)

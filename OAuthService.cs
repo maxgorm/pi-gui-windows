@@ -11,7 +11,7 @@ internal sealed class OAuthService
         if (!File.Exists(helper)) throw new FileNotFoundException("OAuth helper is missing from the application folder.", helper);
         var psi = new ProcessStartInfo
         {
-            FileName = "node.exe", WorkingDirectory = Path.GetDirectoryName(helper)!, UseShellExecute = false,
+            FileName = RuntimeLocator.FindNodeExecutable(), WorkingDirectory = Path.GetDirectoryName(helper)!, UseShellExecute = false,
             RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true
         };
         psi.ArgumentList.Add(helper); psi.ArgumentList.Add(provider);

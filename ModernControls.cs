@@ -91,6 +91,7 @@ internal sealed class ModernDropdown : Control
     public Dictionary<string, string> Descriptions { get; } = new();
     private object? selectedItem;
     private bool hovering;
+    private ContextMenuStrip? activeMenu;
     public event EventHandler? SelectedIndexChanged;
 
     public object? SelectedItem
@@ -127,7 +128,9 @@ internal sealed class ModernDropdown : Control
     private void ShowMenu()
     {
         if (!Enabled || Items.Count == 0) return;
+        activeMenu?.Dispose();
         var menu = new ContextMenuStrip { ShowImageMargin = false, BackColor = Theme.Surface, ForeColor = Theme.Text, Renderer = new DarkMenuRenderer(), Font = Theme.Small };
+        activeMenu = menu;
         foreach (var item in Items)
         {
             var captured = item;
@@ -140,7 +143,25 @@ internal sealed class ModernDropdown : Control
             };
             entry.Click += (_, _) => SelectedItem = captured; menu.Items.Add(entry);
         }
-        menu.Closed += (_, _) => menu.Dispose(); menu.Show(this, new Point(0, Height + 3));
+        // Disposing a ToolStripDropDown from its own Closed event leaves WinForms
+        // processing the close against an already-disposed native handle. Defer
+        // cleanup until the current window message has finished instead.
+        menu.Closed += (_, _) =>
+        {
+            if (!IsHandleCreated || IsDisposed) return;
+            BeginInvoke(() =>
+            {
+                if (ReferenceEquals(activeMenu, menu)) activeMenu = null;
+                menu.Dispose();
+            });
+        };
+        menu.Show(this, new Point(0, Height + 3));
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) { activeMenu?.Dispose(); activeMenu = null; }
+        base.Dispose(disposing);
     }
 
     private sealed class DarkMenuRenderer : ToolStripProfessionalRenderer

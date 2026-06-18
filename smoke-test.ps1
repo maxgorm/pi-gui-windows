@@ -18,4 +18,15 @@ if (-not $copilot.success -or $copilot.data.model.provider -ne 'github-copilot')
 node .\approval-smoke.mjs
 if ($LASTEXITCODE -ne 0) { throw 'Approval RPC smoke test failed.' }
 
-Write-Host 'Build, provider RPC, and approval RPC smoke tests passed.' -ForegroundColor Green
+$originalPath = $env:PATH
+try {
+    $env:PATH = "$env:WINDIR\System32"
+    $stress = Start-Process -FilePath '.\bin\Release\net7.0-windows\PiGUI.exe' -ArgumentList '--runtime-stress' -WorkingDirectory $PSScriptRoot -Wait -PassThru
+    if ($stress.ExitCode -ne 0) { throw 'Packaged runtime discovery or process lifecycle stress test failed.' }
+}
+finally { $env:PATH = $originalPath }
+
+$uiStress = Start-Process -FilePath '.\bin\Release\net7.0-windows\PiGUI.exe' -ArgumentList '--ui-stress' -WorkingDirectory $PSScriptRoot -Wait -PassThru
+if ($uiStress.ExitCode -ne 0) { throw 'Drop-down interaction regression test failed.' }
+
+Write-Host 'Build, provider RPC, approval RPC, Node discovery, lifecycle, and UI interaction tests passed.' -ForegroundColor Green

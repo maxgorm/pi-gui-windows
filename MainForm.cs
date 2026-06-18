@@ -23,8 +23,10 @@ internal sealed class MainForm : Form
     private readonly Label statusLabel = new() { Tag = "muted" };
     private readonly Label authLabel = new() { Tag = "muted" };
     private readonly List<Attachment> attachments = new();
+    private readonly SemaphoreSlim connectionLock = new(1, 1);
     private RichTextBox? streamingMessage;
     private bool initialized;
+    private bool updatingSelections;
 
     public MainForm()
     {
@@ -39,7 +41,7 @@ internal sealed class MainForm : Form
         WireEvents();
         PopulateSettings();
         ApplyThemeTree(this);
-        Shown += async (_, _) => { PositionComposerControls(); await ConnectAsync(); };
+        Shown += (_, _) => RunUiActionAsync(async () => { PositionComposerControls(); await ConnectAsync(); }, "start Pi");
         FormClosing += (_, _) => { settings.Save(); rpc.DisposeAsync().AsTask().GetAwaiter().GetResult(); };
     }
 
@@ -58,14 +60,17 @@ internal sealed class MainForm : Form
 
         var newChat = MakeButton("＋   New thread", 42, "sidebar");
         newChat.Location = new Point(14, 66); newChat.Width = 220; newChat.TextAlign = ContentAlignment.MiddleLeft; newChat.Padding = new Padding(12, 0, 0, 0);
-        newChat.Click += async (_, _) => await NewChatAsync(); sidebar.Controls.Add(newChat);
-        sidebar.Controls.Add(new Label { Text = "WORKSPACES", AutoSize = true, Font = new Font("Segoe UI Semibold", 8), Location = new Point(20, 130), Tag = "muted" });
-        recentProjects.Location = new Point(10, 153); recentProjects.Width = 228; recentProjects.Height = 410; recentProjects.FlowDirection = FlowDirection.TopDown; recentProjects.WrapContents = false; recentProjects.AutoScroll = true;
+        newChat.Click += (_, _) => RunUiActionAsync(NewChatAsync, "start a new thread"); sidebar.Controls.Add(newChat);
+        var newProject = MakeButton("✦   Work in a new project", 38, "sidebar");
+        newProject.Location = new Point(14, 114); newProject.Width = 220; newProject.TextAlign = ContentAlignment.MiddleLeft; newProject.Padding = new Padding(12, 0, 0, 0);
+        newProject.Click += (_, _) => RunUiAction(CreateNewProject, "create a project"); sidebar.Controls.Add(newProject);
+        sidebar.Controls.Add(new Label { Text = "WORKSPACES", AutoSize = true, Font = new Font("Segoe UI Semibold", 8), Location = new Point(20, 174), Tag = "muted" });
+        recentProjects.Location = new Point(10, 197); recentProjects.Width = 228; recentProjects.Height = 370; recentProjects.FlowDirection = FlowDirection.TopDown; recentProjects.WrapContents = false; recentProjects.AutoScroll = true;
         sidebar.Controls.Add(recentProjects);
 
         var accounts = MakeButton("⚙   Accounts + settings", 40, "sidebar");
         accounts.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom; accounts.Width = 220; accounts.TextAlign = ContentAlignment.MiddleLeft; accounts.Padding = new Padding(11, 0, 0, 0);
-        accounts.Click += (_, _) => OpenAccounts(); sidebar.Controls.Add(accounts);
+        accounts.Click += (_, _) => RunUiAction(OpenAccounts, "open account settings"); sidebar.Controls.Add(accounts);
         authLabel.AutoSize = true; authLabel.Font = Theme.Small; sidebar.Controls.Add(authLabel);
         void PositionSidebarFooter() { accounts.Top = sidebar.ClientSize.Height - 58; authLabel.Location = new Point(20, accounts.Top - 30); }
         sidebar.Resize += (_, _) => PositionSidebarFooter(); PositionSidebarFooter();
@@ -90,7 +95,7 @@ internal sealed class MainForm : Form
         attachmentBar.Dock = DockStyle.Top; attachmentBar.Height = 34; attachmentBar.WrapContents = false; attachmentBar.AutoScroll = true; composerCard.Controls.Add(attachmentBar);
         composer.BorderStyle = BorderStyle.None; composer.Font = new Font("Segoe UI", 11); composer.Location = new Point(17, 43); composer.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom; composerCard.Controls.Add(composer);
 
-        attachButton = MakeButton("＋", 38, "surface"); attachButton.Font = new Font("Segoe UI", 14); attachButton.Anchor = AnchorStyles.Left | AnchorStyles.Bottom; attachButton.Width = 40; attachButton.Click += (_, _) => ChooseFiles(); composerCard.Controls.Add(attachButton);
+        attachButton = MakeButton("＋", 38, "surface"); attachButton.Font = new Font("Segoe UI", 14); attachButton.Anchor = AnchorStyles.Left | AnchorStyles.Bottom; attachButton.Width = 40; attachButton.Click += (_, _) => RunUiAction(ChooseFiles, "attach files"); composerCard.Controls.Add(attachButton);
         SetupCombo(providerBox, 108); SetupCombo(modelBox, 132); SetupCombo(effortBox, 90); SetupCombo(approvalBox, 144);
         composerCard.Controls.Add(providerBox); composerCard.Controls.Add(modelBox); composerCard.Controls.Add(effortBox); composerCard.Controls.Add(approvalBox);
 
@@ -119,14 +124,14 @@ internal sealed class MainForm : Form
         rpc.EventReceived += e => Ui(() => HandleEvent(e));
         rpc.ErrorReceived += text => Ui(() => ShowRuntimeError(text));
         rpc.Exited += () => Ui(() => SetStatus("Disconnected", false));
-        projectButton.Click += (_, _) => ChooseProject();
-        providerBox.SelectedIndexChanged += async (_, _) => await ChangeProviderAsync();
-        modelBox.SelectedIndexChanged += async (_, _) => await ChangeModelAsync();
-        effortBox.SelectedIndexChanged += async (_, _) => await ChangeEffortAsync();
-        approvalBox.SelectedIndexChanged += async (_, _) => await ChangeApprovalAsync();
-        sendButton.Click += async (_, _) => await SendAsync();
-        stopButton.Click += async (_, _) => { try { await rpc.SendAsync(new { type = "abort" }); } catch { } };
-        composer.KeyDown += async (_, e) => { if (e.KeyCode == Keys.Enter && !e.Shift) { e.SuppressKeyPress = true; await SendAsync(); } };
+        projectButton.Click += (_, _) => RunUiAction(ChooseProject, "choose a project");
+        providerBox.SelectedIndexChanged += (_, _) => RunSelectionAction(ChangeProviderAsync, "change provider");
+        modelBox.SelectedIndexChanged += (_, _) => RunSelectionAction(ChangeModelAsync, "change model");
+        effortBox.SelectedIndexChanged += (_, _) => RunSelectionAction(ChangeEffortAsync, "change reasoning effort");
+        approvalBox.SelectedIndexChanged += (_, _) => RunSelectionAction(ChangeApprovalAsync, "change approval mode");
+        sendButton.Click += (_, _) => RunUiActionAsync(SendAsync, "send the message");
+        stopButton.Click += (_, _) => RunUiActionAsync(async () => { if (rpc.IsRunning) await rpc.SendAsync(new { type = "abort" }); }, "stop the response");
+        composer.KeyDown += (_, e) => { if (e.KeyCode == Keys.Enter && !e.Shift) { e.SuppressKeyPress = true; RunUiActionAsync(SendAsync, "send the message"); } };
         composer.ImagePasted += AddClipboardImage;
         DragEnter += (_, e) => { if (e.Data?.GetDataPresent(DataFormats.FileDrop) == true) e.Effect = DragDropEffects.Copy; };
         DragDrop += (_, e) => { if (e.Data?.GetData(DataFormats.FileDrop) is string[] files) AddFiles(files); };
@@ -150,14 +155,16 @@ internal sealed class MainForm : Form
 
     private async Task ConnectAsync()
     {
-        SetStatus("Starting pi…", false);
+        await connectionLock.WaitAsync();
         try
         {
+            SetStatus("Starting pi…", false);
             await rpc.StartAsync(settings.ProjectPath, ProviderId(), ModelId(), settings.Effort, settings.ApprovalMode);
             var connected = OAuthService.IsConnected(ProviderId());
             SetStatus(connected ? "Ready" : $"{providerBox.SelectedItem} sign-in required", connected);
         }
         catch (Exception ex) { SetStatus("Setup needed", false); AddSystemMessage(ex.Message + "\n\nOpen Accounts & settings if this provider is not connected yet.", true); }
+        finally { connectionLock.Release(); }
         RefreshAuthStatus();
     }
 
@@ -165,9 +172,17 @@ internal sealed class MainForm : Form
     {
         var text = composer.Text.Trim(); if (text.Length == 0 && attachments.Count == 0) return;
         if (!rpc.IsRunning) { await ConnectAsync(); if (!rpc.IsRunning) return; }
-        var outgoing = attachments.ToList(); AddUserMessage(text.Length == 0 ? "[Attachments]" : text, outgoing);
-        composer.Clear(); attachments.Clear(); RefreshAttachments();
-        try { await rpc.PromptAsync(text, outgoing); } catch (Exception ex) { AddSystemMessage(ex.Message, true); SetBusy(false); }
+        var outgoing = attachments.ToList();
+        await connectionLock.WaitAsync();
+        try
+        {
+            if (!rpc.IsRunning) throw new InvalidOperationException("Pi is reconnecting. Please send the message again in a moment.");
+            await rpc.PromptAsync(text, outgoing);
+            AddUserMessage(text.Length == 0 ? "[Attachments]" : text, outgoing);
+            composer.Clear(); attachments.Clear(); RefreshAttachments();
+        }
+        catch (Exception ex) { AddSystemMessage(ex.Message, true); SetBusy(false); }
+        finally { connectionLock.Release(); }
     }
 
     private void HandleEvent(JsonElement e)
@@ -267,12 +282,20 @@ internal sealed class MainForm : Form
     private void ChooseProject()
     {
         using var dialog = new FolderBrowserDialog { Description = "Choose the workspace Pi should work in", SelectedPath = settings.ProjectPath, UseDescriptionForTitle = true };
-        if (dialog.ShowDialog(this) == DialogResult.OK) SwitchProject(dialog.SelectedPath);
+        if (dialog.ShowDialog(this) == DialogResult.OK)
+            RunUiActionAsync(() => SwitchProjectAsync(dialog.SelectedPath), "switch projects");
     }
 
-    private async void SwitchProject(string path)
+    private void CreateNewProject()
     {
-        settings.RememberProject(path); UpdateProjectLabel(); RefreshRecentProjects(); transcript.Controls.Clear(); AddWelcome(); await ConnectAsync();
+        using var dialog = new NewProjectForm();
+        if (dialog.ShowDialog(this) == DialogResult.OK && dialog.ProjectPath is { } path)
+            RunUiActionAsync(() => SwitchProjectAsync(path), "switch projects");
+    }
+
+    private Task SwitchProjectAsync(string path)
+    {
+        settings.RememberProject(path); UpdateProjectLabel(); RefreshRecentProjects(); transcript.Controls.Clear(); AddWelcome(); return ConnectAsync();
     }
 
     private void UpdateProjectLabel() => projectButton.Text = $"📁  {DisplayFolder(settings.ProjectPath)}    ▾";
@@ -284,7 +307,7 @@ internal sealed class MainForm : Form
         foreach (var path in settings.RecentProjects.Prepend(settings.ProjectPath).Distinct(StringComparer.OrdinalIgnoreCase))
         {
             var button = MakeButton("📁  " + DisplayFolder(path), 37, "sidebar"); button.Width = 214; button.TextAlign = ContentAlignment.MiddleLeft; button.Padding = new Padding(10, 0, 0, 0); button.Tag = path; button.AutoEllipsis = true;
-            button.Click += (_, _) => SwitchProject((string)button.Tag); recentProjects.Controls.Add(button);
+            button.Click += (_, _) => RunUiActionAsync(() => SwitchProjectAsync((string)button.Tag), "switch projects"); recentProjects.Controls.Add(button);
         }
         ApplyThemeTree(recentProjects);
     }
@@ -303,10 +326,57 @@ internal sealed class MainForm : Form
         }
     }
 
-    private async Task ChangeModelAsync() { if (modelBox.SelectedItem is null) return; settings.Model = ModelId(); settings.Save(); if (initialized && rpc.IsRunning) try { await rpc.SendAsync(new { type = "set_model", provider = ProviderId(), modelId = settings.Model }); } catch (Exception ex) { AddSystemMessage(ex.Message, true); } }
-    private async Task ChangeProviderAsync() { if (providerBox.SelectedItem is null) return; settings.Provider = ProviderId(); PopulateModels(settings.Provider == "github-copilot" ? "gpt-5.3-codex" : "gpt-5.5"); settings.Model = ModelId(); settings.Save(); RefreshAuthStatus(); if (initialized) await ConnectAsync(); }
-    private async Task ChangeEffortAsync() { if (effortBox.SelectedItem is not string effort) return; settings.Effort = effort; settings.Save(); if (rpc.IsRunning) try { await rpc.SendAsync(new { type = "set_thinking_level", level = effort }); } catch (Exception ex) { AddSystemMessage(ex.Message, true); } }
+    private async Task ChangeModelAsync()
+    {
+        if (modelBox.SelectedItem is null) return; settings.Model = ModelId(); settings.Save(); if (!initialized) return;
+        await connectionLock.WaitAsync();
+        try { if (rpc.IsRunning) await rpc.SendAsync(new { type = "set_model", provider = ProviderId(), modelId = settings.Model }); }
+        catch (Exception ex) { AddSystemMessage(ex.Message, true); }
+        finally { connectionLock.Release(); }
+    }
+    private async Task ChangeProviderAsync()
+    {
+        if (providerBox.SelectedItem is null) return;
+        settings.Provider = ProviderId();
+        updatingSelections = true;
+        try { PopulateModels(settings.Provider == "github-copilot" ? "gpt-5.3-codex" : "gpt-5.5"); }
+        finally { updatingSelections = false; }
+        settings.Model = ModelId(); settings.Save(); RefreshAuthStatus();
+        if (initialized) await ConnectAsync();
+    }
+    private async Task ChangeEffortAsync()
+    {
+        if (effortBox.SelectedItem is not string effort) return; settings.Effort = effort; settings.Save(); if (!initialized) return;
+        await connectionLock.WaitAsync();
+        try { if (rpc.IsRunning) await rpc.SendAsync(new { type = "set_thinking_level", level = effort }); }
+        catch (Exception ex) { AddSystemMessage(ex.Message, true); }
+        finally { connectionLock.Release(); }
+    }
     private async Task ChangeApprovalAsync() { if (approvalBox.SelectedItem is null) return; settings.ApprovalMode = ApprovalId(approvalBox.SelectedItem.ToString()!); settings.Save(); if (initialized) await ConnectAsync(); }
+
+    private void RunSelectionAction(Func<Task> action, string description)
+    {
+        if (!updatingSelections) RunUiActionAsync(action, description);
+    }
+
+    private async void RunUiActionAsync(Func<Task> action, string description)
+    {
+        try { await action(); }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { ReportUiFailure(description, ex); }
+    }
+
+    private void RunUiAction(Action action, string description)
+    {
+        try { action(); }
+        catch (Exception ex) { ReportUiFailure(description, ex); }
+    }
+
+    private void ReportUiFailure(string description, Exception ex)
+    {
+        SetBusy(false);
+        AddSystemMessage($"Could not {description}: {ex.Message}", true);
+    }
 
     private string ProviderId() => providerBox.SelectedItem?.ToString() == "GitHub Copilot" ? "github-copilot" : "openai-codex";
     private string ModelId() => modelBox.SelectedItem?.ToString() switch { "GPT-5.4" => "gpt-5.4", "GPT-5.4 mini" => "gpt-5.4-mini", "GPT-5.3 Codex" => "gpt-5.3-codex", "GPT-5.2 Codex" => "gpt-5.2-codex", "Claude Opus 4.8" => "claude-opus-4.8", _ => "gpt-5.5" };

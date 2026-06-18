@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 
 namespace PiGUI;
@@ -29,7 +30,7 @@ internal sealed class MainForm : Form
 
     private readonly AppSettings settings = AppSettings.Load();
     private readonly PiRpcClient rpc = new();
-    private readonly FlowLayoutPanel transcript = new() { Tag = "background" };
+    private readonly SmoothFlowLayoutPanel transcript = new() { Tag = "background" };
     private readonly FlowLayoutPanel attachmentBar = new() { Tag = "surface" };
     private readonly FlowLayoutPanel recentProjects = new() { Tag = "sidebar" };
     private readonly ComposerBox composer = new() { Tag = "composer" };
@@ -47,8 +48,11 @@ internal sealed class MainForm : Form
     private readonly Label authLabel = new() { Tag = "muted" };
     private readonly Label usageFooterLabel = new() { Tag = "muted" };
     private readonly List<Attachment> attachments = new();
+    private readonly Dictionary<string, ModernButton> activeToolChips = new();
     private readonly SemaphoreSlim connectionLock = new(1, 1);
     private readonly ResponseUsageTracker responseUsage;
+    private readonly StringBuilder pendingStreamText = new();
+    private readonly System.Windows.Forms.Timer streamFlushTimer = new() { Interval = 50 };
     private MarkdownRichTextBox? streamingMessage;
     private Label? streamingMetadata;
     private long sessionTotalTokens;
@@ -58,10 +62,12 @@ internal sealed class MainForm : Form
     private double? contextPercent;
     private bool initialized;
     private bool updatingSelections;
+    private bool scrollPending;
 
     public MainForm()
     {
         responseUsage = new ResponseUsageTracker(FriendlyModelName);
+        streamFlushTimer.Tick += (_, _) => FlushStreamText();
         Theme.SetMode(settings.ThemeMode);
         Text = "Pi GUI for Windows";
         MinimumSize = new Size(1020, 680);
@@ -74,7 +80,7 @@ internal sealed class MainForm : Form
         PopulateSettings();
         ApplyThemeTree(this);
         Shown += (_, _) => RunUiActionAsync(async () => { PositionComposerControls(); await ConnectAsync(); }, "start Pi");
-        FormClosing += (_, _) => { settings.Save(); rpc.DisposeAsync().AsTask().GetAwaiter().GetResult(); };
+        FormClosing += (_, _) => { streamFlushTimer.Stop(); streamFlushTimer.Dispose(); settings.Save(); rpc.DisposeAsync().AsTask().GetAwaiter().GetResult(); };
     }
 
     private void BuildLayout()
@@ -197,6 +203,13 @@ internal sealed class MainForm : Form
 
     private async Task ConnectAsync()
     {
+        if (ProviderId() == "github-copilot" && !OAuthService.IsConnected("github-copilot"))
+        {
+            await rpc.StopAsync();
+            SetStatus("GitHub Copilot sign-in required", false);
+            RefreshAuthStatus();
+            return;
+        }
         await connectionLock.WaitAsync();
         try
         {
@@ -251,10 +264,16 @@ internal sealed class MainForm : Form
                     else if (updateType.GetString() == "error" && update.TryGetProperty("error", out var error)) AddSystemMessage(error.ToString(), true);
                 }
                 break;
-            case "tool_execution_start": AddToolMessage($"Running {(e.TryGetProperty("toolName", out var tn) ? tn.GetString() : "tool")}…"); break;
+            case "tool_execution_start":
+                var startedTool = e.TryGetProperty("toolName", out var tn) ? tn.GetString() ?? "tool" : "tool";
+                var startedId = e.TryGetProperty("toolCallId", out var startedIdNode) ? startedIdNode.GetString() : null;
+                var chip = AddToolMessage($"Running {startedTool}…");
+                if (startedId is not null) activeToolChips[startedId] = chip;
+                break;
             case "tool_execution_end":
                 var failed = e.TryGetProperty("isError", out var ie) && ie.GetBoolean();
-                AddToolMessage($"{(e.TryGetProperty("toolName", out var en) ? en.GetString() : "tool")} {(failed ? "failed" : "finished")}"); break;
+                FinishToolMessage(e, failed);
+                break;
             case "auto_retry_start": statusLabel.Text = "Retrying…"; break;
             case "compaction_start": statusLabel.Text = "Compacting context…"; break;
         }
@@ -281,17 +300,33 @@ internal sealed class MainForm : Form
 
     private void AppendStream(string text)
     {
-        EnsureStreamingMessage(); streamingMessage!.AppendMarkdown(text); ResizeMessageBox(streamingMessage); ScrollToBottom();
+        EnsureStreamingMessage();
+        pendingStreamText.Append(text);
+        if (!streamFlushTimer.Enabled) streamFlushTimer.Start();
+    }
+
+    private void FlushStreamText()
+    {
+        if (pendingStreamText.Length == 0) { streamFlushTimer.Stop(); return; }
+        if (streamingMessage is null) { pendingStreamText.Clear(); streamFlushTimer.Stop(); return; }
+        var keepAtBottom = IsTranscriptNearBottom();
+        var text = pendingStreamText.ToString(); pendingStreamText.Clear();
+        streamingMessage.AppendStreamingMarkdown(text);
+        ResizeMessageBox(streamingMessage);
+        if (keepAtBottom) ScrollToBottom();
     }
 
     private void FinishStreamingMessage()
     {
+        FlushStreamText();
         if (streamingMessage is { MarkdownLength: 0 }) streamingMessage.SetMarkdown("Done.");
+        else streamingMessage?.FinalizeMarkdown();
         if (streamingMetadata is not null) streamingMetadata.Text = responseUsage.Finish();
         sessionTotalTokens += responseUsage.TotalTokens;
         sessionTotalCredits += responseUsage.EstimatedCopilotCredits;
         if (streamingMessage is not null) ResizeMessageBox(streamingMessage);
-        streamingMessage = null; streamingMetadata = null; statusLabel.Text = "Ready"; UpdateUsageFooter();
+        streamingMessage = null; streamingMetadata = null; pendingStreamText.Clear(); streamFlushTimer.Stop();
+        statusLabel.Text = "Ready"; UpdateUsageFooter(); ScrollToBottom();
     }
     private void AddWelcome() => AddSystemMessage("What would you like to build?\n\nPi can read and edit files, run commands, and work across the selected project. Paste an image, drop files here, or attach them below.", false);
 
@@ -307,10 +342,40 @@ internal sealed class MainForm : Form
         transcript.Controls.Add(WrapMessage(error ? "NOTICE" : "PI", box, false)); ScrollToBottom();
     }
 
-    private void AddToolMessage(string text)
+    private ModernButton AddToolMessage(string text)
     {
         var chip = new ModernButton { Text = "⚙  " + text, AutoSize = true, Height = 30, Margin = new Padding(12, 4, 0, 5), Font = Theme.Small, Tag = "surface", Enabled = false };
         transcript.Controls.Add(chip); ApplyThemeTree(chip); ScrollToBottom();
+        return chip;
+    }
+
+    private void FinishToolMessage(JsonElement e, bool failed)
+    {
+        var tool = e.TryGetProperty("toolName", out var name) ? name.GetString() ?? "tool" : "tool";
+        var id = e.TryGetProperty("toolCallId", out var idNode) ? idNode.GetString() : null;
+        var detail = failed ? ToolFailureSummary(e) : "";
+        var text = $"⚙  {tool} {(failed ? "failed" : "finished")}{(detail.Length > 0 ? " — " + detail : "")}";
+        if (id is not null && activeToolChips.Remove(id, out var chip))
+        {
+            chip.Text = text;
+            chip.Tag = failed ? "tool-error" : "muted";
+            chip.ForeColor = failed ? Color.FromArgb(225, 92, 92) : Theme.Muted;
+            chip.Invalidate();
+        }
+        else AddToolMessage(text[3..]);
+        ScrollToBottom();
+    }
+
+    private static string ToolFailureSummary(JsonElement e)
+    {
+        if (!e.TryGetProperty("result", out var result) || !result.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.Array) return "";
+        var text = content.EnumerateArray()
+            .Where(item => item.TryGetProperty("type", out var type) && type.GetString() == "text" && item.TryGetProperty("text", out _))
+            .Select(item => item.GetProperty("text").GetString())
+            .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
+        if (text is null) return "";
+        var singleLine = string.Join(" ", text.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)).Trim();
+        return singleLine.Length <= 180 ? singleLine : singleLine[..177] + "…";
     }
 
     private Control WrapMessage(string author, RichTextBox box, bool user, bool showResponseMetadata = false)
@@ -340,7 +405,7 @@ internal sealed class MainForm : Form
     private static void ResizeMessageBox(RichTextBox box)
     {
         var measured = TextRenderer.MeasureText(box.Text + "\n", box.Font, new Size(Math.Max(200, box.Width - 12), int.MaxValue), TextFormatFlags.WordBreak);
-        box.Height = Math.Min(700, Math.Max(38, measured.Height + 10));
+        box.Height = Math.Min(20_000, Math.Max(38, measured.Height + 10));
         if (box.Parent is RoundedPanel bubble)
         {
             var metadata = bubble.Controls.OfType<Label>().FirstOrDefault(label => Equals(label.Tag, "response-meta"));
@@ -350,7 +415,7 @@ internal sealed class MainForm : Form
         }
     }
 
-    private async Task NewChatAsync() { try { if (rpc.IsRunning) await rpc.SendAsync(new { type = "new_session" }); } catch { } transcript.Controls.Clear(); streamingMessage = null; streamingMetadata = null; ResetChatUsage(); AddWelcome(); }
+    private async Task NewChatAsync() { try { if (rpc.IsRunning) await rpc.SendAsync(new { type = "new_session" }); } catch { } streamFlushTimer.Stop(); pendingStreamText.Clear(); activeToolChips.Clear(); transcript.Controls.Clear(); streamingMessage = null; streamingMetadata = null; ResetChatUsage(); AddWelcome(); }
 
     private void ChooseProject()
     {
@@ -368,7 +433,7 @@ internal sealed class MainForm : Form
 
     private Task SwitchProjectAsync(string path)
     {
-        settings.RememberProject(path); UpdateProjectLabel(); RefreshRecentProjects(); transcript.Controls.Clear(); ResetChatUsage(); AddWelcome(); return ConnectAsync();
+        settings.RememberProject(path); UpdateProjectLabel(); RefreshRecentProjects(); activeToolChips.Clear(); transcript.Controls.Clear(); ResetChatUsage(); AddWelcome(); return ConnectAsync();
     }
 
     private void UpdateProjectLabel() => projectButton.Text = $"📁  {DisplayFolder(settings.ProjectPath)}    ▾";
@@ -527,7 +592,27 @@ internal sealed class MainForm : Form
     private void SetStatus(string text, bool connected) { statusLabel.Text = (connected ? "●  " : "○  ") + text; statusLabel.ForeColor = connected ? Theme.Success : Theme.Muted; }
     private void ShowRuntimeError(string text) { if (text.Contains("error", StringComparison.OrdinalIgnoreCase) || text.Contains("No API key", StringComparison.OrdinalIgnoreCase)) statusLabel.Text = "Runtime notice"; }
     private void Ui(Action action) { if (IsDisposed) return; if (InvokeRequired) BeginInvoke(action); else action(); }
-    private void ScrollToBottom() { if (!IsHandleCreated) return; BeginInvoke(() => { if (!IsDisposed && transcript.Controls.Count > 0) transcript.ScrollControlIntoView(transcript.Controls[transcript.Controls.Count - 1]); }); }
+    private bool IsTranscriptNearBottom()
+    {
+        if (!transcript.VerticalScroll.Visible) return true;
+        return transcript.VerticalScroll.Value + transcript.VerticalScroll.LargeChange >= transcript.VerticalScroll.Maximum - 80;
+    }
+
+    private void ScrollToBottom()
+    {
+        if (!IsHandleCreated || scrollPending) return;
+        scrollPending = true;
+        BeginInvoke(() =>
+        {
+            try
+            {
+                if (IsDisposed || transcript.Controls.Count == 0) return;
+                transcript.PerformLayout();
+                transcript.ScrollControlIntoView(transcript.Controls[transcript.Controls.Count - 1]);
+            }
+            finally { scrollPending = false; }
+        });
+    }
 
     private void ResizeMessages()
     {
@@ -559,7 +644,8 @@ internal sealed class MainForm : Form
         if (control is ModernButton button)
         {
             button.NormalColor = tag == "accent" ? Theme.Accent : tag == "sidebar" ? Theme.Sidebar : Theme.Surface;
-            button.HoverColor = tag == "accent" ? Theme.AccentHover : Theme.SurfaceHover; button.BorderColor = tag == "sidebar" ? Theme.Sidebar : Theme.Border; button.ForeColor = tag == "accent" ? Color.White : Theme.Text; button.Invalidate();
+            button.HoverColor = tag == "accent" ? Theme.AccentHover : Theme.SurfaceHover; button.BorderColor = tag == "sidebar" ? Theme.Sidebar : Theme.Border;
+            button.ForeColor = tag == "accent" ? Color.White : tag == "tool-error" ? Color.FromArgb(225, 92, 92) : tag == "muted" ? Theme.Muted : Theme.Text; button.Invalidate();
         }
         if (control is ModernDropdown dropdown) dropdown.Invalidate();
         if (control is MarkdownRichTextBox markdown) markdown.ApplyMarkdownTheme();

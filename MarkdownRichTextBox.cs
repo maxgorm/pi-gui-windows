@@ -11,6 +11,7 @@ internal sealed class MarkdownRichTextBox : RichTextBox
 
     private readonly StringBuilder markdown = new();
     private Color? colorOverride;
+    private bool streaming;
 
     public int MarkdownLength => markdown.Length;
 
@@ -29,16 +30,32 @@ internal sealed class MarkdownRichTextBox : RichTextBox
         markdown.Clear();
         markdown.Append(value);
         colorOverride = textColor;
+        streaming = false;
         RenderMarkdown();
     }
 
-    public void AppendMarkdown(string value)
+    public void AppendStreamingMarkdown(string value)
     {
         markdown.Append(value);
+        streaming = true;
+        AppendStyled(value, Theme.Ui, colorOverride ?? Theme.Text);
+    }
+
+    public void FinalizeMarkdown()
+    {
+        streaming = false;
         RenderMarkdown();
     }
 
-    public void ApplyMarkdownTheme() => RenderMarkdown();
+    public void ApplyMarkdownTheme()
+    {
+        if (streaming)
+        {
+            Clear();
+            AppendStyled(markdown.ToString(), Theme.Ui, colorOverride ?? Theme.Text);
+        }
+        else RenderMarkdown();
+    }
 
     private void RenderMarkdown()
     {

@@ -2,6 +2,15 @@ using System.Drawing.Drawing2D;
 
 namespace PiGUI;
 
+internal sealed class SmoothFlowLayoutPanel : FlowLayoutPanel
+{
+    public SmoothFlowLayoutPanel()
+    {
+        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+        DoubleBuffered = true;
+    }
+}
+
 internal static class Shape
 {
     public static GraphicsPath Rounded(Rectangle bounds, int radius)

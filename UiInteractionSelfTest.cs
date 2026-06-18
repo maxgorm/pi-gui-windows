@@ -20,6 +20,15 @@ internal static class UiInteractionSelfTest
         var markdown = new MarkdownRichTextBox { Location = new Point(20, 70), Width = 260 };
         markdown.SetMarkdown("# Status\n   I’m **ready** with `code`.\n    - First item");
         form.Controls.Add(markdown);
+        var streamingMarkdown = new MarkdownRichTextBox();
+        streamingMarkdown.SetMarkdown("");
+        streamingMarkdown.AppendStreamingMarkdown("**smooth");
+        streamingMarkdown.AppendStreamingMarkdown(" output**");
+        if (streamingMarkdown.Text != "**smooth output**")
+            throw new InvalidOperationException("Streaming text was not appended incrementally.");
+        streamingMarkdown.FinalizeMarkdown();
+        if (streamingMarkdown.Text != "smooth output")
+            throw new InvalidOperationException("Streaming Markdown did not finalize correctly.");
         var usage = new ResponseUsageTracker(id => id);
         usage.Begin("github-copilot", "gpt-5.4");
         using (var message = JsonDocument.Parse("""{"role":"assistant","provider":"github-copilot","model":"gpt-5.4","responseModel":"gpt-5.5","usage":{"totalTokens":123,"cost":{"total":0.02}}}"""))

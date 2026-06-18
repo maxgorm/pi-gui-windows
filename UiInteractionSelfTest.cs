@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Text.Json;
 
 namespace PiGUI;
 
@@ -17,8 +18,13 @@ internal static class UiInteractionSelfTest
         dropdown.SelectedIndexChanged += (_, _) => changed = true;
         form.Controls.Add(dropdown);
         var markdown = new MarkdownRichTextBox { Location = new Point(20, 70), Width = 260 };
-        markdown.SetMarkdown("# Status\nI’m **ready** with `code`.\n- First item");
+        markdown.SetMarkdown("# Status\n   I’m **ready** with `code`.\n    - First item");
         form.Controls.Add(markdown);
+        var usage = new ResponseUsageTracker(id => id);
+        usage.Begin("github-copilot", "gpt-5.4");
+        using (var message = JsonDocument.Parse("""{"role":"assistant","provider":"github-copilot","model":"gpt-5.4","responseModel":"gpt-5.5","usage":{"totalTokens":123,"cost":{"total":0.02}}}"""))
+            usage.AddMessage(message.RootElement);
+        var usageText = usage.Finish();
 
         ThreadExceptionEventHandler threadException = (_, e) => { failure = e.Exception; form.Close(); };
         Application.ThreadException += threadException;
@@ -31,8 +37,14 @@ internal static class UiInteractionSelfTest
                     ?? throw new InvalidOperationException("The drop-down menu did not open.");
                 if (!markdown.Text.Contains("I’m ready with code.", StringComparison.Ordinal) ||
                     markdown.Text.Contains("**", StringComparison.Ordinal) ||
-                    !markdown.Text.Contains("•  First item", StringComparison.Ordinal))
+                    !markdown.Text.Contains("•  First item", StringComparison.Ordinal) ||
+                    markdown.Text.Contains("    •", StringComparison.Ordinal))
                     throw new InvalidOperationException("Markdown or Unicode chat rendering failed.");
+                if (!usageText.Contains("Actual: gpt-5.5", StringComparison.Ordinal) ||
+                    !usageText.Contains("requested gpt-5.4", StringComparison.Ordinal) ||
+                    !usageText.Contains("123 tokens", StringComparison.Ordinal) ||
+                    !usageText.Contains("~7.5 premium credits", StringComparison.Ordinal))
+                    throw new InvalidOperationException("Response model or usage attribution failed.");
                 menu.Items[1].PerformClick();
                 if (!menu.IsDisposed) menu.Close(ToolStripDropDownCloseReason.ItemClicked);
                 var timer = new System.Windows.Forms.Timer { Interval = 100 };

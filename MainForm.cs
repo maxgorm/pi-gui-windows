@@ -45,14 +45,23 @@ internal sealed class MainForm : Form
     private ModernButton? attachButton;
     private readonly Label statusLabel = new() { Tag = "muted" };
     private readonly Label authLabel = new() { Tag = "muted" };
+    private readonly Label usageFooterLabel = new() { Tag = "muted" };
     private readonly List<Attachment> attachments = new();
     private readonly SemaphoreSlim connectionLock = new(1, 1);
+    private readonly ResponseUsageTracker responseUsage;
     private MarkdownRichTextBox? streamingMessage;
+    private Label? streamingMetadata;
+    private long sessionTotalTokens;
+    private double sessionTotalCredits;
+    private long? contextTokens;
+    private long? contextWindow;
+    private double? contextPercent;
     private bool initialized;
     private bool updatingSelections;
 
     public MainForm()
     {
+        responseUsage = new ResponseUsageTracker(FriendlyModelName);
         Theme.SetMode(settings.ThemeMode);
         Text = "Pi GUI for Windows";
         MinimumSize = new Size(1020, 680);
@@ -99,7 +108,7 @@ internal sealed class MainForm : Form
         sidebar.Resize += (_, _) => PositionSidebarFooter(); PositionSidebarFooter();
 
         var main = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, ColumnCount = 1, Tag = "background" };
-        main.RowStyles.Add(new RowStyle(SizeType.Absolute, 66)); main.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); main.RowStyles.Add(new RowStyle(SizeType.Absolute, 205));
+        main.RowStyles.Add(new RowStyle(SizeType.Absolute, 66)); main.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); main.RowStyles.Add(new RowStyle(SizeType.Absolute, 215));
         root.Controls.Add(main, 1, 0);
 
         var toolbar = new Panel { Dock = DockStyle.Fill, Padding = new Padding(24, 13, 24, 8), Tag = "background" };
@@ -111,7 +120,7 @@ internal sealed class MainForm : Form
         transcript.Dock = DockStyle.Fill; transcript.AutoScroll = true; transcript.FlowDirection = FlowDirection.TopDown; transcript.WrapContents = false; transcript.Padding = new Padding(56, 24, 56, 24);
         main.Controls.Add(transcript, 0, 1);
 
-        var composerHost = new Panel { Dock = DockStyle.Fill, Padding = new Padding(50, 10, 50, 24), Tag = "background" };
+        var composerHost = new Panel { Dock = DockStyle.Fill, Padding = new Padding(50, 10, 50, 30), Tag = "background" };
         main.Controls.Add(composerHost, 0, 2);
         composerCard.Dock = DockStyle.Fill; composerCard.Padding = new Padding(14); composerCard.Radius = 16; composerCard.BorderWidth = 1;
         composerHost.Controls.Add(composerCard);
@@ -119,17 +128,25 @@ internal sealed class MainForm : Form
         composer.BorderStyle = BorderStyle.None; composer.Font = new Font("Segoe UI", 11); composer.Location = new Point(17, 43); composer.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom; composerCard.Controls.Add(composer);
 
         attachButton = MakeButton("＋", 38, "surface"); attachButton.Font = new Font("Segoe UI", 14); attachButton.Anchor = AnchorStyles.Left | AnchorStyles.Bottom; attachButton.Width = 40; attachButton.Click += (_, _) => RunUiAction(ChooseFiles, "attach files"); composerCard.Controls.Add(attachButton);
-        SetupCombo(providerBox, 108); SetupCombo(modelBox, 132); SetupCombo(effortBox, 90); SetupCombo(approvalBox, 144);
+        SetupCombo(providerBox, 148); SetupCombo(modelBox, 178); SetupCombo(effortBox, 90); SetupCombo(approvalBox, 144);
         composerCard.Controls.Add(providerBox); composerCard.Controls.Add(modelBox); composerCard.Controls.Add(effortBox); composerCard.Controls.Add(approvalBox);
 
         sendButton.Text = "↑"; sendButton.Font = new Font("Segoe UI Semibold", 15); sendButton.Anchor = AnchorStyles.Right | AnchorStyles.Bottom; sendButton.Size = new Size(44, 40); sendButton.Radius = 11; composerCard.Controls.Add(sendButton);
         stopButton.Text = "■"; stopButton.Anchor = AnchorStyles.Right | AnchorStyles.Bottom; stopButton.Size = new Size(44, 40); stopButton.Radius = 11; stopButton.Visible = false; composerCard.Controls.Add(stopButton);
+        usageFooterLabel.Font = new Font("Segoe UI", 8F); usageFooterLabel.TextAlign = ContentAlignment.MiddleRight; usageFooterLabel.AutoEllipsis = true;
+        usageFooterLabel.Anchor = AnchorStyles.Right | AnchorStyles.Bottom; usageFooterLabel.Size = new Size(570, 18); composerHost.Controls.Add(usageFooterLabel); usageFooterLabel.BringToFront();
+        void PositionUsageFooter() => usageFooterLabel.Location = new Point(Math.Max(8, composerHost.ClientSize.Width - usageFooterLabel.Width - 50), composerHost.ClientSize.Height - 20);
+        composerHost.Resize += (_, _) => PositionUsageFooter(); PositionUsageFooter();
         composerCard.Resize += (_, _) => PositionComposerControls();
     }
 
     private void PositionComposerControls()
     {
         if (attachButton is null) return;
+        var compact = composerCard.ClientSize.Width < 740;
+        providerBox.Width = compact ? 132 : 148;
+        modelBox.Width = compact ? 142 : 178;
+        approvalBox.Width = compact ? 120 : 144;
         composer.Size = new Size(Math.Max(100, composerCard.ClientSize.Width - 34), Math.Max(45, composerCard.ClientSize.Height - 100));
         var y = Math.Max(8, composerCard.ClientSize.Height - 54); var x = 14;
         attachButton.Location = new Point(x, y); x += 48;
@@ -173,7 +190,7 @@ internal sealed class MainForm : Form
         providerBox.SelectedItem = settings.Provider == "github-copilot" ? "GitHub Copilot" : "Codex";
         PopulateModels(settings.Model); effortBox.SelectedItem = settings.Effort; approvalBox.SelectedItem = ApprovalLabel(settings.ApprovalMode);
         if (!Directory.Exists(settings.ProjectPath)) settings.ProjectPath = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        UpdateProjectLabel(); RefreshRecentProjects(); RefreshAuthStatus(); AddWelcome(); initialized = true;
+        UpdateProjectLabel(); RefreshRecentProjects(); RefreshAuthStatus(); AddWelcome(); UpdateUsageFooter(); initialized = true;
     }
 
     private async Task ConnectAsync()
@@ -189,6 +206,7 @@ internal sealed class MainForm : Form
         catch (Exception ex) { SetStatus("Setup needed", false); AddSystemMessage(ex.Message + "\n\nOpen Accounts & settings if this provider is not connected yet.", true); }
         finally { connectionLock.Release(); }
         RefreshAuthStatus();
+        await RefreshSessionStatsAsync();
     }
 
     private async Task SendAsync()
@@ -213,8 +231,15 @@ internal sealed class MainForm : Form
         if (!e.TryGetProperty("type", out var typeNode)) return;
         switch (typeNode.GetString())
         {
-            case "agent_start": SetBusy(true); EnsureStreamingMessage(); break;
-            case "agent_end": SetBusy(false); FinishStreamingMessage(); break;
+            case "agent_start":
+                SetBusy(true); responseUsage.Begin(ProviderId(), ModelId()); EnsureStreamingMessage(); break;
+            case "agent_end":
+                SetBusy(false); FinishStreamingMessage();
+                RunUiActionAsync(RefreshSessionStatsAsync, "refresh usage");
+                break;
+            case "message_end":
+                if (e.TryGetProperty("message", out var completedMessage)) responseUsage.AddMessage(completedMessage);
+                break;
             case "extension_ui_request": _ = HandleExtensionRequestAsync(e); break;
             case "message_update":
                 if (e.TryGetProperty("assistantMessageEvent", out var update) && update.TryGetProperty("type", out var updateType))
@@ -247,7 +272,9 @@ internal sealed class MainForm : Form
     private void EnsureStreamingMessage()
     {
         if (streamingMessage is not null) return;
-        streamingMessage = CreateMessageBox("", false); transcript.Controls.Add(WrapMessage("PI", streamingMessage, false)); ScrollToBottom();
+        streamingMessage = CreateMessageBox("", false);
+        transcript.Controls.Add(WrapMessage("PI", streamingMessage, false, true));
+        ScrollToBottom();
     }
 
     private void AppendStream(string text)
@@ -255,7 +282,15 @@ internal sealed class MainForm : Form
         EnsureStreamingMessage(); streamingMessage!.AppendMarkdown(text); ResizeMessageBox(streamingMessage); ScrollToBottom();
     }
 
-    private void FinishStreamingMessage() { if (streamingMessage is { MarkdownLength: 0 }) streamingMessage.SetMarkdown("Done."); streamingMessage = null; statusLabel.Text = "Ready"; }
+    private void FinishStreamingMessage()
+    {
+        if (streamingMessage is { MarkdownLength: 0 }) streamingMessage.SetMarkdown("Done.");
+        if (streamingMetadata is not null) streamingMetadata.Text = responseUsage.Finish();
+        sessionTotalTokens += responseUsage.TotalTokens;
+        sessionTotalCredits += responseUsage.EstimatedCopilotCredits;
+        if (streamingMessage is not null) ResizeMessageBox(streamingMessage);
+        streamingMessage = null; streamingMetadata = null; statusLabel.Text = "Ready"; UpdateUsageFooter();
+    }
     private void AddWelcome() => AddSystemMessage("What would you like to build?\n\nPi can read and edit files, run commands, and work across the selected project. Paste an image, drop files here, or attach them below.", false);
 
     private void AddUserMessage(string text, List<Attachment> files)
@@ -276,7 +311,7 @@ internal sealed class MainForm : Form
         transcript.Controls.Add(chip); ApplyThemeTree(chip); ScrollToBottom();
     }
 
-    private Control WrapMessage(string author, RichTextBox box, bool user)
+    private Control WrapMessage(string author, RichTextBox box, bool user, bool showResponseMetadata = false)
     {
         var host = new Panel { Width = Math.Max(420, transcript.ClientSize.Width - 115), Height = box.Height + 48, Margin = new Padding(0, 6, 0, 12), Tag = user ? "message-user" : "message-assistant" };
         var bubbleWidth = Math.Min(760, Math.Max(360, host.Width - 120));
@@ -284,7 +319,13 @@ internal sealed class MainForm : Form
         bubble.Left = user ? host.Width - bubble.Width - 4 : 4; bubble.Top = 8; bubble.Anchor = user ? AnchorStyles.Top | AnchorStyles.Right : AnchorStyles.Top | AnchorStyles.Left;
         var name = new Label { Text = author, AutoSize = true, Font = new Font("Segoe UI Semibold", 8), Location = new Point(14, 8), Tag = "muted" };
         box.Location = new Point(12, 27); box.Width = bubble.Width - 24; box.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
-        bubble.Controls.Add(name); bubble.Controls.Add(box); host.Controls.Add(bubble); ApplyThemeTree(host); return host;
+        bubble.Controls.Add(name); bubble.Controls.Add(box);
+        if (showResponseMetadata)
+        {
+            streamingMetadata = new Label { Text = "Generating…", AutoEllipsis = true, Font = new Font("Segoe UI", 8F), Height = 18, Width = bubble.Width - 24, Tag = "response-meta" };
+            bubble.Controls.Add(streamingMetadata);
+        }
+        host.Controls.Add(bubble); ApplyThemeTree(host); ResizeMessageBox(box); return host;
     }
 
     private MarkdownRichTextBox CreateMessageBox(string text, bool user, Color? textColor = null)
@@ -298,10 +339,16 @@ internal sealed class MainForm : Form
     {
         var measured = TextRenderer.MeasureText(box.Text + "\n", box.Font, new Size(Math.Max(200, box.Width - 12), int.MaxValue), TextFormatFlags.WordBreak);
         box.Height = Math.Min(700, Math.Max(38, measured.Height + 10));
-        if (box.Parent is RoundedPanel bubble) { bubble.Height = box.Height + 38; if (bubble.Parent is Panel host) host.Height = bubble.Height + 16; }
+        if (box.Parent is RoundedPanel bubble)
+        {
+            var metadata = bubble.Controls.OfType<Label>().FirstOrDefault(label => Equals(label.Tag, "response-meta"));
+            if (metadata is not null) { metadata.Location = new Point(12, box.Bottom + 5); metadata.Width = bubble.Width - 24; }
+            bubble.Height = box.Height + (metadata is null ? 38 : 61);
+            if (bubble.Parent is Panel host) host.Height = bubble.Height + 16;
+        }
     }
 
-    private async Task NewChatAsync() { try { if (rpc.IsRunning) await rpc.SendAsync(new { type = "new_session" }); } catch { } transcript.Controls.Clear(); streamingMessage = null; AddWelcome(); }
+    private async Task NewChatAsync() { try { if (rpc.IsRunning) await rpc.SendAsync(new { type = "new_session" }); } catch { } transcript.Controls.Clear(); streamingMessage = null; streamingMetadata = null; ResetChatUsage(); AddWelcome(); }
 
     private void ChooseProject()
     {
@@ -319,7 +366,7 @@ internal sealed class MainForm : Form
 
     private Task SwitchProjectAsync(string path)
     {
-        settings.RememberProject(path); UpdateProjectLabel(); RefreshRecentProjects(); transcript.Controls.Clear(); AddWelcome(); return ConnectAsync();
+        settings.RememberProject(path); UpdateProjectLabel(); RefreshRecentProjects(); transcript.Controls.Clear(); ResetChatUsage(); AddWelcome(); return ConnectAsync();
     }
 
     private void UpdateProjectLabel() => projectButton.Text = $"📁  {DisplayFolder(settings.ProjectPath)}    ▾";
@@ -361,6 +408,7 @@ internal sealed class MainForm : Form
     private async Task ChangeProviderAsync()
     {
         if (providerBox.SelectedItem is null) return;
+        ResetChatUsage();
         settings.Provider = ProviderId();
         updatingSelections = true;
         try { PopulateModels(settings.Provider == "github-copilot" ? "gpt-5.3-codex" : "gpt-5.5"); }
@@ -376,7 +424,7 @@ internal sealed class MainForm : Form
         catch (Exception ex) { AddSystemMessage(ex.Message, true); }
         finally { connectionLock.Release(); }
     }
-    private async Task ChangeApprovalAsync() { if (approvalBox.SelectedItem is null) return; settings.ApprovalMode = ApprovalId(approvalBox.SelectedItem.ToString()!); settings.Save(); if (initialized) await ConnectAsync(); }
+    private async Task ChangeApprovalAsync() { if (approvalBox.SelectedItem is null) return; settings.ApprovalMode = ApprovalId(approvalBox.SelectedItem.ToString()!); settings.Save(); if (initialized) { ResetChatUsage(); await ConnectAsync(); } }
 
     private void RunSelectionAction(Func<Task> action, string description)
     {
@@ -409,6 +457,56 @@ internal sealed class MainForm : Form
         var selected = modelBox.SelectedItem?.ToString();
         return models.FirstOrDefault(model => model.Label == selected).Id ?? models[0].Id;
     }
+
+    private static string FriendlyModelName(string id) =>
+        CopilotModels.Concat(CodexModels).FirstOrDefault(model => model.Id.Equals(id, StringComparison.OrdinalIgnoreCase)).Label
+        ?? id;
+
+    private void ResetChatUsage()
+    {
+        sessionTotalTokens = 0; sessionTotalCredits = 0;
+        contextTokens = null; contextWindow = null; contextPercent = null;
+        UpdateUsageFooter();
+    }
+
+    private async Task RefreshSessionStatsAsync()
+    {
+        if (!rpc.IsRunning) { UpdateUsageFooter(); return; }
+        try
+        {
+            var response = await rpc.SendAsync(new { type = "get_session_stats" });
+            if (!response.TryGetProperty("data", out var data)) return;
+            if (data.TryGetProperty("tokens", out var tokens) && tokens.TryGetProperty("total", out var total) && total.TryGetInt64(out var tokenTotal))
+                sessionTotalTokens = tokenTotal;
+            if (data.TryGetProperty("contextUsage", out var context) && context.ValueKind == JsonValueKind.Object)
+            {
+                contextTokens = context.TryGetProperty("tokens", out var used) && used.TryGetInt64(out var usedValue) ? usedValue : null;
+                contextWindow = context.TryGetProperty("contextWindow", out var window) && window.TryGetInt64(out var windowValue) ? windowValue : null;
+                contextPercent = context.TryGetProperty("percent", out var percent) && percent.TryGetDouble(out var percentValue) ? percentValue : null;
+            }
+            UpdateUsageFooter();
+        }
+        catch { UpdateUsageFooter(); }
+    }
+
+    private void UpdateUsageFooter()
+    {
+        var context = contextPercent is not null
+            ? $"Context {contextPercent:0.#}%  ({FormatCompact(contextTokens)} / {FormatCompact(contextWindow)})"
+            : "Context —";
+        var total = ProviderId() == "github-copilot"
+            ? $"Est. credits {sessionTotalCredits:0.##}"
+            : $"Total tokens {ResponseUsageTracker.FormatNumber(sessionTotalTokens)}";
+        usageFooterLabel.Text = $"{context}     ·     {total}";
+    }
+
+    private static string FormatCompact(long? value)
+    {
+        if (value is null) return "—";
+        if (value >= 1_000_000) return $"{value / 1_000_000D:0.#}M";
+        if (value >= 1_000) return $"{value / 1_000D:0.#}K";
+        return value.Value.ToString("N0");
+    }
     private static string ApprovalId(string label) => label switch { "Approve for me" => "auto", "Full access" => "full", "Custom" => "custom", _ => "ask" };
     private static string ApprovalLabel(string id) => id switch { "auto" => "Approve for me", "full" => "Full access", "custom" => "Custom", _ => "Ask for approval" };
 
@@ -421,7 +519,7 @@ internal sealed class MainForm : Form
         modelBox.SelectedItem = preferred is not null ? preferred : models[0].Label;
     }
 
-    private void OpenAccounts() { using var dialog = new AccountsForm(); dialog.AccountsChanged += async () => { RefreshAuthStatus(); await ConnectAsync(); }; dialog.ShowDialog(this); RefreshAuthStatus(); }
+    private void OpenAccounts() { using var dialog = new AccountsForm(); dialog.AccountsChanged += async () => { RefreshAuthStatus(); ResetChatUsage(); await ConnectAsync(); }; dialog.ShowDialog(this); RefreshAuthStatus(); }
     private void RefreshAuthStatus() { var codex = OAuthService.IsConnected("openai-codex"); var copilot = OAuthService.IsConnected("github-copilot"); authLabel.Text = $"{(codex ? "●" : "○")} Codex   {(copilot ? "●" : "○")} Copilot"; authLabel.ForeColor = codex || copilot ? Theme.Success : Theme.Muted; }
     private void SetBusy(bool value) { sendButton.Visible = !value; stopButton.Visible = value; providerBox.Enabled = !value; modelBox.Enabled = !value; effortBox.Enabled = !value; approvalBox.Enabled = !value; statusLabel.Text = value ? "Working…" : "Ready"; }
     private void SetStatus(string text, bool connected) { statusLabel.Text = (connected ? "●  " : "○  ") + text; statusLabel.ForeColor = connected ? Theme.Success : Theme.Muted; }
@@ -447,11 +545,13 @@ internal sealed class MainForm : Form
     private static void ApplyThemeTree(Control control)
     {
         var tag = control.Tag?.ToString();
-        control.ForeColor = tag == "muted" ? Theme.Muted : Theme.Text;
+        control.ForeColor = tag is "muted" or "response-meta" ? Theme.Muted : Theme.Text;
         control.BackColor = tag switch
         {
-            "sidebar" => Theme.Sidebar, "surface" or "composer" or "bubble-assistant" => Theme.Surface,
-            "bubble-user" => Theme.UserBubble, "accent" => Theme.Accent, _ => Theme.Background
+            "sidebar" => Theme.Sidebar, "surface" or "composer" => Theme.Surface,
+            "bubble-assistant" => Theme.AssistantBubble, "bubble-user" => Theme.UserBubble, "accent" => Theme.Accent,
+            "muted" or "response-meta" => control.Parent?.BackColor ?? Theme.Background,
+            _ => Theme.Background
         };
         if (control is ModernButton button)
         {

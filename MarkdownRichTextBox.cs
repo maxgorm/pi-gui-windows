@@ -79,7 +79,6 @@ internal sealed class MarkdownRichTextBox : RichTextBox
     private void RenderLine(string line, Color baseColor)
     {
         var trimmed = line.TrimStart();
-        var indent = line[..(line.Length - trimmed.Length)];
         var headingLevel = 0;
         while (headingLevel < trimmed.Length && headingLevel < 6 && trimmed[headingLevel] == '#') headingLevel++;
         if (headingLevel > 0 && headingLevel < trimmed.Length && trimmed[headingLevel] == ' ')
@@ -107,12 +106,14 @@ internal sealed class MarkdownRichTextBox : RichTextBox
         var bullet = Regex.Match(trimmed, @"^[-*+]\s+(.*)$");
         if (bullet.Success)
         {
-            AppendStyled(indent + "•  ", Theme.Ui, Theme.Accent);
+            AppendStyled("•  ", Theme.Ui, Theme.Accent);
             AppendInline(bullet.Groups[1].Value, Theme.Ui, baseColor);
             return;
         }
 
-        AppendInline(line, Theme.Ui, baseColor);
+        // Model output often carries transport/pretty-print whitespace that is
+        // not meaningful Markdown. Do not let it compound into visual indents.
+        AppendInline(trimmed, Theme.Ui, baseColor);
     }
 
     private void AppendInline(string text, Font baseFont, Color baseColor)
@@ -158,6 +159,9 @@ internal sealed class MarkdownRichTextBox : RichTextBox
         SelectionFont = font;
         SelectionColor = color;
         SelectionBackColor = background ?? BackColor;
+        SelectionIndent = 0;
+        SelectionHangingIndent = 0;
+        SelectionRightIndent = 0;
         SelectedText = text;
     }
 }

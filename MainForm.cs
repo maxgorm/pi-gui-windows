@@ -4,6 +4,29 @@ namespace PiGUI;
 
 internal sealed class MainForm : Form
 {
+    private static readonly (string Label, string Id)[] CodexModels =
+    {
+        ("GPT-5.5", "gpt-5.5"),
+        ("GPT-5.4", "gpt-5.4"),
+        ("GPT-5.4 mini", "gpt-5.4-mini")
+    };
+
+    private static readonly (string Label, string Id)[] CopilotModels =
+    {
+        ("GPT-5 Mini", "gpt-5-mini"),
+        ("GPT-5.3 Codex", "gpt-5.3-codex"),
+        ("GPT-5.4", "gpt-5.4"),
+        ("GPT-5.4 mini", "gpt-5.4-mini"),
+        ("GPT-5.4 nano", "gpt-5.4-nano"),
+        ("GPT-5.5", "gpt-5.5"),
+        ("Claude Haiku 4.5", "claude-haiku-4.5"),
+        ("Claude Opus 4.8", "claude-opus-4.8"),
+        ("Claude Fable 5", "claude-fable-5"),
+        ("Claude Sonnet 4.6", "claude-sonnet-4.6"),
+        ("Gemini 3.1 Pro", "gemini-3.1-pro-preview"),
+        ("Gemini 3.5 Flash", "gemini-3.5-flash")
+    };
+
     private readonly AppSettings settings = AppSettings.Load();
     private readonly PiRpcClient rpc = new();
     private readonly FlowLayoutPanel transcript = new() { Tag = "background" };
@@ -379,16 +402,22 @@ internal sealed class MainForm : Form
     }
 
     private string ProviderId() => providerBox.SelectedItem?.ToString() == "GitHub Copilot" ? "github-copilot" : "openai-codex";
-    private string ModelId() => modelBox.SelectedItem?.ToString() switch { "GPT-5.4" => "gpt-5.4", "GPT-5.4 mini" => "gpt-5.4-mini", "GPT-5.3 Codex" => "gpt-5.3-codex", "GPT-5.2 Codex" => "gpt-5.2-codex", "Claude Opus 4.8" => "claude-opus-4.8", _ => "gpt-5.5" };
+    private string ModelId()
+    {
+        var models = ProviderId() == "github-copilot" ? CopilotModels : CodexModels;
+        var selected = modelBox.SelectedItem?.ToString();
+        return models.FirstOrDefault(model => model.Label == selected).Id ?? models[0].Id;
+    }
     private static string ApprovalId(string label) => label switch { "Approve for me" => "auto", "Full access" => "full", "Custom" => "custom", _ => "ask" };
     private static string ApprovalLabel(string id) => id switch { "auto" => "Approve for me", "full" => "Full access", "custom" => "Custom", _ => "Ask for approval" };
 
     private void PopulateModels(string preferredId)
     {
+        var models = ProviderId() == "github-copilot" ? CopilotModels : CodexModels;
         modelBox.Items.Clear();
-        if (ProviderId() == "github-copilot") modelBox.Items.AddRange(new object[] { "GPT-5.3 Codex", "GPT-5.2 Codex", "Claude Opus 4.8" }); else modelBox.Items.AddRange(new object[] { "GPT-5.5", "GPT-5.4", "GPT-5.4 mini" });
-        var friendly = preferredId switch { "gpt-5.4" => "GPT-5.4", "gpt-5.4-mini" => "GPT-5.4 mini", "gpt-5.3-codex" => "GPT-5.3 Codex", "gpt-5.2-codex" => "GPT-5.2 Codex", "claude-opus-4.8" => "Claude Opus 4.8", _ => "GPT-5.5" };
-        modelBox.SelectedItem = modelBox.Items.Contains(friendly) ? friendly : modelBox.Items[0];
+        modelBox.Items.AddRange(models.Select(model => (object)model.Label));
+        var preferred = models.FirstOrDefault(model => model.Id == preferredId).Label;
+        modelBox.SelectedItem = preferred is not null ? preferred : models[0].Label;
     }
 
     private void OpenAccounts() { using var dialog = new AccountsForm(); dialog.AccountsChanged += async () => { RefreshAuthStatus(); await ConnectAsync(); }; dialog.ShowDialog(this); RefreshAuthStatus(); }

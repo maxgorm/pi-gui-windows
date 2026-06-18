@@ -1,4 +1,5 @@
 using System.Drawing.Drawing2D;
+using System.Runtime.InteropServices;
 
 namespace PiGUI;
 
@@ -8,6 +9,28 @@ internal sealed class SmoothFlowLayoutPanel : FlowLayoutPanel
     {
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
         DoubleBuffered = true;
+    }
+}
+
+internal sealed class ScrollbarlessFlowLayoutPanel : FlowLayoutPanel
+{
+    [DllImport("user32.dll")] private static extern bool ShowScrollBar(IntPtr hWnd, int wBar, bool bShow);
+    private const int SbVert = 1;
+
+    public ScrollbarlessFlowLayoutPanel()
+    {
+        AutoScroll = true; SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint, true);
+        ControlAdded += (_, _) => HideScrollbarSoon();
+    }
+
+    protected override void OnHandleCreated(EventArgs e) { base.OnHandleCreated(e); HideScrollbarSoon(); }
+    protected override void OnLayout(LayoutEventArgs levent) { base.OnLayout(levent); HideScrollbarSoon(); }
+    protected override void OnSizeChanged(EventArgs e) { base.OnSizeChanged(e); HideScrollbarSoon(); }
+
+    private void HideScrollbarSoon()
+    {
+        if (!IsHandleCreated || IsDisposed) return;
+        BeginInvoke(() => { if (!IsDisposed && IsHandleCreated) ShowScrollBar(Handle, SbVert, false); });
     }
 }
 

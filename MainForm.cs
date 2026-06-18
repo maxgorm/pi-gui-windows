@@ -32,7 +32,7 @@ internal sealed class MainForm : Form
     private readonly PiRpcClient rpc = new();
     private readonly SmoothFlowLayoutPanel transcript = new() { Tag = "background" };
     private readonly FlowLayoutPanel attachmentBar = new() { Tag = "surface" };
-    private readonly FlowLayoutPanel recentProjects = new() { Tag = "sidebar" };
+    private readonly ScrollbarlessFlowLayoutPanel recentProjects = new() { Tag = "sidebar" };
     private readonly ComposerBox composer = new() { Tag = "composer" };
     private readonly ModernDropdown providerBox = new();
     private readonly ModernDropdown modelBox = new();
@@ -109,14 +109,18 @@ internal sealed class MainForm : Form
         newProject.Location = new Point(14, 114); newProject.Width = 220; newProject.TextAlign = ContentAlignment.MiddleLeft; newProject.Padding = new Padding(12, 0, 0, 0);
         newProject.Click += (_, _) => RunUiAction(CreateNewProject, "create a project"); sidebar.Controls.Add(newProject);
         sidebar.Controls.Add(new Label { Text = "WORKSPACES", AutoSize = true, Font = new Font("Segoe UI Semibold", 8), Location = new Point(20, 174), Tag = "muted" });
-        recentProjects.Location = new Point(10, 197); recentProjects.Width = 228; recentProjects.Height = 370; recentProjects.FlowDirection = FlowDirection.TopDown; recentProjects.WrapContents = false; recentProjects.AutoScroll = true;
+        recentProjects.Location = new Point(10, 197); recentProjects.Width = 228; recentProjects.Height = 370; recentProjects.FlowDirection = FlowDirection.TopDown; recentProjects.WrapContents = false;
         sidebar.Controls.Add(recentProjects);
 
         var accounts = MakeButton("⚙   Accounts + settings", 40, "sidebar");
         accounts.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom; accounts.Width = 220; accounts.TextAlign = ContentAlignment.MiddleLeft; accounts.Padding = new Padding(11, 0, 0, 0);
         accounts.Click += (_, _) => RunUiAction(OpenAccounts, "open account settings"); sidebar.Controls.Add(accounts);
         authLabel.AutoSize = true; authLabel.Font = Theme.Small; sidebar.Controls.Add(authLabel);
-        void PositionSidebarFooter() { accounts.Top = sidebar.ClientSize.Height - 58; authLabel.Location = new Point(20, accounts.Top - 30); }
+        void PositionSidebarFooter()
+        {
+            accounts.Top = sidebar.ClientSize.Height - 58; authLabel.Location = new Point(20, accounts.Top - 30);
+            recentProjects.Height = Math.Max(100, authLabel.Top - recentProjects.Top - 12);
+        }
         sidebar.Resize += (_, _) => PositionSidebarFooter(); PositionSidebarFooter();
 
         mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 66)); mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));

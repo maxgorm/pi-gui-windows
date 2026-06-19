@@ -30,7 +30,7 @@ internal sealed class MainForm : Form
 
     private readonly AppSettings settings = AppSettings.Load();
     private readonly PiRpcClient rpc = new();
-    private readonly SmoothFlowLayoutPanel transcript = new() { Tag = "background" };
+    private readonly ScrollbarlessFlowLayoutPanel transcript = new() { Tag = "background", DrawScrollIndicator = true };
     private readonly FlowLayoutPanel attachmentBar = new() { Tag = "surface" };
     private readonly ScrollbarlessFlowLayoutPanel recentProjects = new() { Tag = "sidebar" };
     private readonly ComposerBox composer = new() { Tag = "composer" };
@@ -57,8 +57,9 @@ internal sealed class MainForm : Form
     private readonly StringBuilder pendingStreamText = new();
     private readonly System.Windows.Forms.Timer streamFlushTimer = new() { Interval = 50 };
     private MarkdownRichTextBox? streamingMessage;
-    private Label? streamingMetadata;
     private ActivityTimelinePanel? streamingActivity;
+    private Panel? streamingActivityHost;
+    private MarkdownRichTextBox? lastResponseSegment;
     private long sessionTotalTokens;
     private double sessionTotalCredits;
     private long? contextTokens;
@@ -277,7 +278,7 @@ internal sealed class MainForm : Form
         switch (typeNode.GetString())
         {
             case "agent_start":
-                SetBusy(true); responseUsage.Begin(ProviderId(), ModelId()); EnsureStreamingMessage(); break;
+                SetBusy(true); responseUsage.Begin(ProviderId(), ModelId()); lastResponseSegment = null; EnsureActivitySegment().ShowThinking(); break;
             case "agent_end":
                 SetBusy(false); FinishStreamingMessage();
                 RunUiActionAsync(RefreshSessionStatsAsync, "refresh usage");
@@ -291,20 +292,21 @@ internal sealed class MainForm : Form
                 if (e.TryGetProperty("assistantMessageEvent", out var update) && update.TryGetProperty("type", out var updateType))
                 {
                     if (updateType.GetString() == "text_delta" && update.TryGetProperty("delta", out var delta)) AppendStream(delta.GetString() ?? "");
-                    else if (updateType.GetString() == "thinking_delta") { statusLabel.Text = "Thinking…"; streamingActivity?.ShowThinking(); }
+                    else if (updateType.GetString() == "thinking_delta") { statusLabel.Text = "Thinking…"; EnsureActivitySegment().ShowThinking(); }
                     else if (updateType.GetString() == "error" && update.TryGetProperty("error", out var error)) AddSystemMessage(error.ToString(), true);
                 }
                 break;
             case "tool_execution_start":
+                FinalizeStreamingTextSegment();
                 var startedTool = e.TryGetProperty("toolName", out var tn) ? tn.GetString() ?? "tool" : "tool";
                 var startedId = e.TryGetProperty("toolCallId", out var startedIdNode) ? startedIdNode.GetString() : null;
-                streamingActivity?.StartTool(startedId ?? Guid.NewGuid().ToString("N"), startedTool, ToolInvocationSummary(e));
+                EnsureActivitySegment().StartTool(startedId ?? Guid.NewGuid().ToString("N"), startedTool, ToolInvocationSummary(e));
                 break;
             case "tool_execution_end":
                 var failed = e.TryGetProperty("isError", out var ie) && ie.GetBoolean();
                 var endedTool = e.TryGetProperty("toolName", out var endedName) ? endedName.GetString() ?? "tool" : "tool";
                 var endedId = e.TryGetProperty("toolCallId", out var endedIdNode) ? endedIdNode.GetString() ?? endedTool : endedTool;
-                streamingActivity?.FinishTool(endedId, endedTool, failed, failed ? ToolFailureSummary(e) : "");
+                EnsureActivitySegment().FinishTool(endedId, endedTool, failed, failed ? ToolFailureSummary(e) : "");
                 break;
             case "auto_retry_start": statusLabel.Text = "Retrying…"; break;
             case "compaction_start": statusLabel.Text = "Compacting context…"; break;
@@ -327,9 +329,38 @@ internal sealed class MainForm : Form
     private void EnsureStreamingMessage()
     {
         if (streamingMessage is not null) return;
+        CompleteActivitySegment();
         streamingMessage = CreateMessageBox("", false);
-        transcript.Controls.Add(WrapMessage("PI", streamingMessage, false, true));
+        lastResponseSegment = streamingMessage;
+        transcript.Controls.Add(WrapMessage("PI", streamingMessage, false, copyResponse: true));
         ScrollToBottom();
+    }
+
+    private ActivityTimelinePanel EnsureActivitySegment()
+    {
+        if (streamingActivity is not null) return streamingActivity;
+        var width = Math.Min(760, Math.Max(360, transcript.ClientSize.Width - 235));
+        var host = new Panel
+        {
+            Width = Math.Max(420, transcript.ClientSize.Width - 115), Height = 46,
+            Margin = new Padding(4, 2, 0, 8), Tag = "activity-host"
+        };
+        var activity = new ActivityTimelinePanel { Width = width, Location = new Point(4, 4), Anchor = AnchorStyles.Top | AnchorStyles.Left };
+        activity.TimelineHeightChanged += () =>
+        {
+            host.Height = Math.Max(38, activity.Height + 8); transcript.PerformLayout();
+            if (IsTranscriptNearBottom()) ScrollToBottom();
+        };
+        host.Controls.Add(activity); transcript.Controls.Add(host); ApplyThemeTree(host);
+        streamingActivity = activity; streamingActivityHost = host; ScrollToBottom(); return activity;
+    }
+
+    private void CompleteActivitySegment()
+    {
+        if (streamingActivity is null) return;
+        streamingActivity.Complete();
+        if (streamingActivityHost is not null) streamingActivityHost.Height = Math.Max(38, streamingActivity.Height + 8);
+        streamingActivity = null; streamingActivityHost = null;
     }
 
     private void AppendStream(string text)
@@ -350,17 +381,27 @@ internal sealed class MainForm : Form
         if (keepAtBottom) ScrollToBottom();
     }
 
-    private void FinishStreamingMessage()
+    private void FinalizeStreamingTextSegment()
     {
         FlushStreamText();
-        if (streamingMessage is { MarkdownLength: 0 }) streamingMessage.SetMarkdown("Done.");
-        else streamingMessage?.FinalizeMarkdown();
-        if (streamingMetadata is not null) streamingMetadata.Text = responseUsage.Finish();
-        streamingActivity?.Complete();
+        if (streamingMessage is null) return;
+        if (streamingMessage.MarkdownLength == 0) streamingMessage.SetMarkdown("Done.");
+        else streamingMessage.FinalizeMarkdown();
+        ResizeMessageBox(streamingMessage); streamingMessage = null; pendingStreamText.Clear(); streamFlushTimer.Stop();
+    }
+
+    private void FinishStreamingMessage()
+    {
+        FinalizeStreamingTextSegment(); CompleteActivitySegment();
+        if (lastResponseSegment is null)
+        {
+            lastResponseSegment = CreateMessageBox("Done.", false);
+            transcript.Controls.Add(WrapMessage("PI", lastResponseSegment, false, copyResponse: true));
+        }
+        AddResponseMetadata(lastResponseSegment, responseUsage.Finish());
         sessionTotalTokens += responseUsage.TotalTokens;
         sessionTotalCredits += responseUsage.EstimatedCopilotCredits;
-        if (streamingMessage is not null) ResizeMessageBox(streamingMessage);
-        streamingMessage = null; streamingMetadata = null; streamingActivity = null; pendingStreamText.Clear(); streamFlushTimer.Stop();
+        lastResponseSegment = null; pendingStreamText.Clear(); streamFlushTimer.Stop();
         statusLabel.Text = "Ready"; UpdateUsageFooter(); ScrollToBottom();
     }
     private void AddWelcome() => AddSystemMessage("What would you like to build?\n\nPi can read and edit files, run commands, and work across the selected project. Paste an image, drop files here, or attach them below.", false);
@@ -409,10 +450,8 @@ internal sealed class MainForm : Form
         bubble.Controls.Add(name); bubble.Controls.Add(box);
         if (showResponseMetadata)
         {
-            streamingActivity = new ActivityTimelinePanel { Width = bubble.Width - 24 };
-            streamingActivity.TimelineHeightChanged += () => { ResizeMessageBox(box); ScrollToBottom(); };
-            streamingMetadata = new Label { Text = "Generating…", AutoEllipsis = true, Font = new Font("Segoe UI", 8F), Height = 18, Width = bubble.Width - 24, Tag = "response-meta" };
-            bubble.Controls.Add(streamingActivity); bubble.Controls.Add(streamingMetadata);
+            var metadata = new Label { Text = "Generating…", AutoEllipsis = true, Font = new Font("Segoe UI", 8F), Height = 18, Width = bubble.Width - 24, Tag = "response-meta" };
+            bubble.Controls.Add(metadata);
         }
         if (showResponseMetadata || copyResponse)
         {
@@ -421,6 +460,18 @@ internal sealed class MainForm : Form
             bubble.Controls.Add(copy);
         }
         host.Controls.Add(bubble); ApplyThemeTree(host); ResizeMessageBox(box); return host;
+    }
+
+    private static void AddResponseMetadata(RichTextBox box, string text)
+    {
+        if (box.Parent is not RoundedPanel bubble) return;
+        var metadata = bubble.Controls.OfType<Label>().FirstOrDefault(label => Equals(label.Tag, "response-meta"));
+        if (metadata is null)
+        {
+            metadata = new Label { AutoEllipsis = true, Font = new Font("Segoe UI", 8F), Height = 18, Tag = "response-meta", ForeColor = Theme.Muted, BackColor = bubble.BackColor };
+            bubble.Controls.Add(metadata);
+        }
+        metadata.Text = text; ResizeMessageBox(box);
     }
 
     private static void CopyResponseText(RichTextBox box, ModernButton button)
@@ -471,7 +522,7 @@ internal sealed class MainForm : Form
     {
         try { if (rpc.IsRunning) await rpc.SendAsync(new { type = "new_session" }); currentSessionPath = await GetCurrentSessionPathAsync(); }
         catch { currentSessionPath = null; }
-        streamFlushTimer.Stop(); pendingStreamText.Clear(); transcript.Controls.Clear(); streamingMessage = null; streamingMetadata = null; streamingActivity = null;
+        streamFlushTimer.Stop(); pendingStreamText.Clear(); transcript.Controls.Clear(); streamingMessage = null; streamingActivity = null; streamingActivityHost = null; lastResponseSegment = null;
         ResetChatUsage(); AddWelcome(); RefreshRecentProjects();
     }
 
@@ -739,8 +790,9 @@ internal sealed class MainForm : Form
     private void Ui(Action action) { if (IsDisposed) return; if (InvokeRequired) BeginInvoke(action); else action(); }
     private bool IsTranscriptNearBottom()
     {
-        if (!transcript.VerticalScroll.Visible) return true;
-        return transcript.VerticalScroll.Value + transcript.VerticalScroll.LargeChange >= transcript.VerticalScroll.Maximum - 80;
+        var range = transcript.VerticalScroll.Maximum - transcript.VerticalScroll.LargeChange + 1;
+        if (range <= 0) return true;
+        return transcript.VerticalScroll.Value >= range - 80;
     }
 
     private void ScrollToBottom()
@@ -763,7 +815,15 @@ internal sealed class MainForm : Form
     {
         foreach (Control control in transcript.Controls)
         {
-            if (control is not Panel host || host.Tag?.ToString()?.StartsWith("message-") != true) continue;
+            if (control is not Panel host) continue;
+            if (Equals(host.Tag, "activity-host"))
+            {
+                host.Width = Math.Max(420, transcript.ClientSize.Width - 115);
+                if (host.Controls.OfType<ActivityTimelinePanel>().FirstOrDefault() is { } activity)
+                    activity.Width = Math.Min(760, Math.Max(360, transcript.ClientSize.Width - 235));
+                continue;
+            }
+            if (host.Tag?.ToString()?.StartsWith("message-") != true) continue;
             host.Width = Math.Max(420, transcript.ClientSize.Width - 115);
             if (host.Controls.OfType<RoundedPanel>().FirstOrDefault() is { } bubble && host.Tag?.ToString() == "message-user") bubble.Left = host.Width - bubble.Width - 4;
         }

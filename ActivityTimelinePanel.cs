@@ -5,15 +5,19 @@ internal sealed class ActivityTimelinePanel : Panel
     private sealed record ActivityEntry(string Id, Label Label);
 
     private readonly ModernButton header = new() { Dock = DockStyle.Top, Height = 30, Radius = 8, Tag = "surface", Text = "Thinking…" };
-    private readonly SmoothFlowLayoutPanel details = new()
+    private readonly ScrollbarlessFlowLayoutPanel details = new()
     {
         AutoScroll = true, FlowDirection = FlowDirection.TopDown, WrapContents = false,
-        Location = new Point(0, 34), Tag = "transparent-muted", Visible = false
+        Location = new Point(0, 34), Tag = "transparent-muted", Visible = false, DrawScrollIndicator = true
     };
     private readonly List<ActivityEntry> entries = new();
     private bool complete;
     private bool expanded;
     private bool hasThinking;
+    private readonly System.Windows.Forms.Timer animation = new() { Interval = 180 };
+    private readonly string[] frames = { "◐", "◓", "◑", "◒" };
+    private string activeText = "Thinking";
+    private int animationFrame;
 
     public event Action? TimelineHeightChanged;
 
@@ -23,11 +27,13 @@ internal sealed class ActivityTimelinePanel : Panel
         Controls.Add(details); Controls.Add(header);
         header.Click += (_, _) => ToggleExpanded();
         Resize += (_, _) => ResizeChildren();
+        animation.Tick += (_, _) => { header.Text = $"{frames[animationFrame++ % frames.Length]}  {activeText}"; };
+        animation.Start();
     }
 
     public void ShowThinking()
     {
-        header.Text = "Thinking…";
+        SetActive("Thinking");
         if (hasThinking) return;
         hasThinking = true;
         AddEntry("thinking", "◌  Thinking through the request");
@@ -37,7 +43,7 @@ internal sealed class ActivityTimelinePanel : Panel
     {
         var action = FriendlyAction(tool);
         var suffix = string.IsNullOrWhiteSpace(detail) ? "" : $" — {detail}";
-        header.Text = $"{action}…";
+        SetActive(action);
         AddEntry(id, $"◌  {action}{suffix}");
     }
 
@@ -53,12 +59,13 @@ internal sealed class ActivityTimelinePanel : Panel
             entry.Label.Text = text;
             entry.Label.ForeColor = failed ? Color.FromArgb(225, 92, 92) : Theme.Muted;
         }
-        header.Text = failed ? $"{action} failed" : $"{action} finished";
+        SetActive(failed ? $"{action} failed" : $"{action} finished");
     }
 
     public void Complete()
     {
         complete = true;
+        animation.Stop();
         if (entries.Count == 0)
         {
             Visible = false; Height = 0; TimelineHeightChanged?.Invoke(); return;
@@ -68,6 +75,8 @@ internal sealed class ActivityTimelinePanel : Panel
         header.Text = entries.Count == 0 ? "Response complete" : $"▸  {entries.Count} {(entries.Count == 1 ? "activity" : "activities")} · View details";
         UpdateHeight();
     }
+
+    private void SetActive(string text) { activeText = text; if (!animation.Enabled) animation.Start(); }
 
     private void AddEntry(string id, string text)
     {
@@ -111,4 +120,6 @@ internal sealed class ActivityTimelinePanel : Panel
         "edit" => "Editing file", "grep" => "Searching files", "find" => "Finding files", "ls" => "Listing files",
         _ => tool
     };
+
+    protected override void Dispose(bool disposing) { if (disposing) animation.Dispose(); base.Dispose(disposing); }
 }

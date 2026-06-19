@@ -16,16 +16,67 @@ internal sealed class ScrollbarlessFlowLayoutPanel : FlowLayoutPanel
 {
     [DllImport("user32.dll")] private static extern bool ShowScrollBar(IntPtr hWnd, int wBar, bool bShow);
     private const int SbVert = 1;
+    private bool draggingThumb;
+    public bool DrawScrollIndicator { get; set; }
 
     public ScrollbarlessFlowLayoutPanel()
     {
-        AutoScroll = true; SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint, true);
+        AutoScroll = true; SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint, true);
         ControlAdded += (_, _) => HideScrollbarSoon();
     }
 
     protected override void OnHandleCreated(EventArgs e) { base.OnHandleCreated(e); HideScrollbarSoon(); }
     protected override void OnLayout(LayoutEventArgs levent) { base.OnLayout(levent); HideScrollbarSoon(); }
     protected override void OnSizeChanged(EventArgs e) { base.OnSizeChanged(e); HideScrollbarSoon(); }
+    protected override void OnScroll(ScrollEventArgs se) { base.OnScroll(se); Invalidate(); }
+    protected override void OnMouseWheel(MouseEventArgs e) { base.OnMouseWheel(e); Invalidate(); }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        if (!DrawScrollIndicator || !TryGetThumb(out var track, out var thumb)) return;
+        using var trackBrush = new SolidBrush(Theme.IsDark ? Color.FromArgb(31, 33, 38) : Color.FromArgb(229, 232, 238));
+        using var thumbBrush = new SolidBrush(Theme.IsDark ? Color.FromArgb(82, 86, 96) : Color.FromArgb(154, 159, 170));
+        e.Graphics.FillRectangle(trackBrush, track); e.Graphics.FillRectangle(thumbBrush, thumb);
+    }
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        if (DrawScrollIndicator && TryGetThumb(out var track, out var thumb) && track.Contains(e.Location))
+        {
+            draggingThumb = true; Capture = true; SetScrollFromMouse(e.Y, track, thumb.Height); return;
+        }
+        base.OnMouseDown(e);
+    }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        if (draggingThumb && TryGetThumb(out var track, out var thumb)) { SetScrollFromMouse(e.Y, track, thumb.Height); return; }
+        base.OnMouseMove(e);
+    }
+
+    protected override void OnMouseUp(MouseEventArgs e) { draggingThumb = false; Capture = false; base.OnMouseUp(e); }
+
+    private bool TryGetThumb(out Rectangle track, out Rectangle thumb)
+    {
+        track = new Rectangle(Math.Max(0, ClientSize.Width - 7), 3, 5, Math.Max(0, ClientSize.Height - 6)); thumb = Rectangle.Empty;
+        var maximum = VerticalScroll.Maximum;
+        var large = Math.Max(1, VerticalScroll.LargeChange);
+        var range = Math.Max(0, maximum - large + 1);
+        if (track.Height <= 0 || range <= 0) return false;
+        var height = Math.Max(28, (int)(track.Height * Math.Min(1D, large / (double)(maximum + 1))));
+        var travel = Math.Max(1, track.Height - height);
+        var top = track.Top + (int)(travel * Math.Min(1D, VerticalScroll.Value / (double)range));
+        thumb = new Rectangle(track.X, top, track.Width, Math.Min(height, track.Height)); return true;
+    }
+
+    private void SetScrollFromMouse(int mouseY, Rectangle track, int thumbHeight)
+    {
+        var range = Math.Max(0, VerticalScroll.Maximum - VerticalScroll.LargeChange + 1);
+        var travel = Math.Max(1, track.Height - thumbHeight);
+        var ratio = Math.Clamp((mouseY - track.Top - thumbHeight / 2D) / travel, 0D, 1D);
+        AutoScrollPosition = new Point(0, (int)(range * ratio)); Invalidate();
+    }
 
     private void HideScrollbarSoon()
     {

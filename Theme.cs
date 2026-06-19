@@ -19,6 +19,9 @@ internal static class Theme
     public static Color Warning => IsDark ? Color.FromArgb(255, 172, 92) : Color.FromArgb(201, 103, 18);
     public static Color Terminal => IsDark ? Color.FromArgb(14, 15, 18) : Color.FromArgb(246, 247, 250);
     public static Color TerminalInput => IsDark ? Color.FromArgb(24, 26, 30) : Color.White;
+    public static Color ActivityRunning => IsDark ? Color.FromArgb(20, 44, 65) : Color.FromArgb(229, 243, 255);
+    public static Color ActivityComplete => IsDark ? Color.FromArgb(23, 49, 39) : Color.FromArgb(232, 247, 238);
+    public static Color ActivityError => IsDark ? Color.FromArgb(62, 31, 35) : Color.FromArgb(255, 237, 239);
     public static readonly Font Ui = new("Segoe UI", 10F);
     public static readonly Font Small = new("Segoe UI", 9F);
     public static readonly Font Mono = new("Cascadia Mono", 9F);

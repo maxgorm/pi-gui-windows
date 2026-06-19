@@ -11,6 +11,8 @@ internal sealed class TerminalPanel : Panel
     private Process? process;
     private int promptStart;
     private int inputStart;
+    private string currentDirectory = "";
+    private const string CwdMarker = "__PIGUI_CWD__";
     public event Action? CloseRequested;
 
     public TerminalPanel()
@@ -21,7 +23,7 @@ internal sealed class TerminalPanel : Panel
         close.Click += (_, _) => CloseRequested?.Invoke(); Controls.Add(close);
 
         terminal.BorderStyle = BorderStyle.None; terminal.Font = Theme.Mono; terminal.BackColor = Theme.Terminal; terminal.ForeColor = Theme.Text;
-        terminal.Tag = "terminal"; terminal.AcceptsTab = true; terminal.DetectUrls = false; terminal.WordWrap = false;
+        terminal.Tag = "terminal"; terminal.AcceptsTab = true; terminal.DetectUrls = false; terminal.WordWrap = false; terminal.ScrollBars = RichTextBoxScrollBars.None;
         terminal.Location = new Point(14, 36); terminal.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
         terminal.KeyDown += TerminalKeyDown; terminal.MouseDown += (_, _) => BeginInvoke(KeepCaretInInput);
         Controls.Add(title); Controls.Add(terminal);
@@ -31,7 +33,7 @@ internal sealed class TerminalPanel : Panel
 
     public void Start(string workingDirectory)
     {
-        Stop(); pendingCommands.Clear(); title.Text = $"TERMINAL   {workingDirectory}";
+        Stop(); pendingCommands.Clear(); currentDirectory = workingDirectory; title.Text = $"TERMINAL   {workingDirectory}";
         terminal.Clear(); terminal.SelectionColor = Theme.Text;
         terminal.AppendText($"PowerShell · {workingDirectory}{Environment.NewLine}");
         ShowPrompt();
@@ -82,7 +84,12 @@ internal sealed class TerminalPanel : Panel
         if (!string.IsNullOrWhiteSpace(command)) pendingCommands.Enqueue(command);
         ShowPrompt();
         if (string.IsNullOrWhiteSpace(command)) return;
-        try { process?.StandardInput.WriteLine(command); process?.StandardInput.Flush(); }
+        try
+        {
+            process?.StandardInput.WriteLine(command);
+            process?.StandardInput.WriteLine($"[Console]::WriteLine('{CwdMarker}' + (Get-Location).Path)");
+            process?.StandardInput.Flush();
+        }
         catch (Exception ex) { AppendOutput(ex.Message + Environment.NewLine, true); }
     }
 
@@ -91,7 +98,13 @@ internal sealed class TerminalPanel : Panel
         if (IsDisposed) return;
         if (InvokeRequired) { BeginInvoke(() => AppendOutput(text, error)); return; }
         var line = text.TrimEnd('\r', '\n');
-        if (pendingCommands.Count > 0 && line.StartsWith("PS ", StringComparison.OrdinalIgnoreCase) && line.EndsWith(pendingCommands.Peek(), StringComparison.OrdinalIgnoreCase))
+        if (line.StartsWith(CwdMarker, StringComparison.Ordinal))
+        {
+            if (pendingCommands.Count > 0) pendingCommands.Dequeue();
+            currentDirectory = line[CwdMarker.Length..]; title.Text = $"TERMINAL   {currentDirectory}"; ReplacePrompt(); return;
+        }
+        if (line.StartsWith("PS ", StringComparison.OrdinalIgnoreCase) && line.Contains(CwdMarker, StringComparison.Ordinal)) return;
+        if (pendingCommands.Count > 0 && line.StartsWith("PS ", StringComparison.OrdinalIgnoreCase) && line.Contains(pendingCommands.Peek(), StringComparison.OrdinalIgnoreCase))
         {
             pendingCommands.Dequeue(); return;
         }
@@ -104,10 +117,16 @@ internal sealed class TerminalPanel : Panel
 
     private void ShowPrompt(string currentInput = "")
     {
-        promptStart = terminal.TextLength; terminal.SelectionColor = Theme.Success; terminal.AppendText("❯ ");
+        promptStart = terminal.TextLength; terminal.SelectionColor = Theme.Success; terminal.AppendText($"{currentDirectory} ❯ ");
         inputStart = terminal.TextLength; terminal.SelectionColor = Theme.Text;
         if (currentInput.Length > 0) terminal.AppendText(currentInput);
         terminal.SelectionStart = terminal.TextLength; terminal.SelectionLength = 0;
+    }
+
+    private void ReplacePrompt()
+    {
+        var currentInput = inputStart <= terminal.TextLength ? terminal.Text[inputStart..] : "";
+        terminal.Select(promptStart, terminal.TextLength - promptStart); terminal.SelectedText = ""; ShowPrompt(currentInput);
     }
 
     private void KeepCaretInInput()

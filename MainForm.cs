@@ -55,11 +55,13 @@ internal sealed class MainForm : Form
     private readonly SemaphoreSlim connectionLock = new(1, 1);
     private readonly ResponseUsageTracker responseUsage;
     private readonly StringBuilder pendingStreamText = new();
-    private readonly System.Windows.Forms.Timer streamFlushTimer = new() { Interval = 50 };
+    private readonly System.Windows.Forms.Timer streamFlushTimer = new() { Interval = 32 };
+    private readonly System.Windows.Forms.Timer streamPulseTimer = new() { Interval = 380 };
     private MarkdownRichTextBox? streamingMessage;
     private ActivityTimelinePanel? streamingActivity;
     private Panel? streamingActivityHost;
     private MarkdownRichTextBox? lastResponseSegment;
+    private Label? streamingCursor;
     private long sessionTotalTokens;
     private double sessionTotalCredits;
     private long? contextTokens;
@@ -68,12 +70,14 @@ internal sealed class MainForm : Form
     private bool initialized;
     private bool updatingSelections;
     private bool scrollPending;
+    private bool transcriptFollowTail = true;
     private string? currentSessionPath;
 
     public MainForm()
     {
         responseUsage = new ResponseUsageTracker(FriendlyModelName);
         streamFlushTimer.Tick += (_, _) => FlushStreamText();
+        streamPulseTimer.Tick += (_, _) => { if (streamingCursor is { IsDisposed: false } cursor) { cursor.ForeColor = cursor.ForeColor == Theme.Accent ? Theme.Muted : Theme.Accent; cursor.Invalidate(); } };
         Theme.SetMode(settings.ThemeMode);
         Text = "Pi GUI for Windows";
         MinimumSize = new Size(1020, 680);
@@ -87,7 +91,7 @@ internal sealed class MainForm : Form
         ApplyThemeTree(this);
         HandleCreated += (_, _) => NativeTheme.Apply(this);
         Shown += (_, _) => RunUiActionAsync(async () => { PositionComposerControls(); await ConnectAsync(); }, "start Pi");
-        FormClosing += (_, _) => { streamFlushTimer.Stop(); streamFlushTimer.Dispose(); terminalPanel.Stop(); settings.Save(); rpc.DisposeAsync().AsTask().GetAwaiter().GetResult(); };
+        FormClosing += (_, _) => { streamFlushTimer.Stop(); streamFlushTimer.Dispose(); streamPulseTimer.Stop(); streamPulseTimer.Dispose(); terminalPanel.Stop(); settings.Save(); rpc.DisposeAsync().AsTask().GetAwaiter().GetResult(); };
     }
 
     private void BuildLayout()
@@ -153,6 +157,8 @@ internal sealed class MainForm : Form
         composerHost.Controls.Add(composerCard, 0, 0);
         attachmentBar.Dock = DockStyle.Top; attachmentBar.Height = 34; attachmentBar.WrapContents = false; attachmentBar.AutoScroll = true; composerCard.Controls.Add(attachmentBar);
         composer.BorderStyle = BorderStyle.None; composer.Font = new Font("Segoe UI", 11); composer.Location = new Point(17, 43); composer.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom; composerCard.Controls.Add(composer);
+        composer.Enter += (_, _) => { composerCard.BorderColor = Theme.Accent; composerCard.BorderWidth = 1; composerCard.Invalidate(); };
+        composer.Leave += (_, _) => { composerCard.BorderColor = Theme.Border; composerCard.Invalidate(); };
 
         attachButton = MakeButton("＋", 38, "surface"); attachButton.Font = new Font("Segoe UI", 14); attachButton.Anchor = AnchorStyles.Left | AnchorStyles.Bottom; attachButton.Width = 40; attachButton.Click += (_, _) => RunUiAction(ChooseFiles, "attach files"); composerCard.Controls.Add(attachButton);
         SetupCombo(providerBox, 148); SetupCombo(modelBox, 178); SetupCombo(effortBox, 90); SetupCombo(approvalBox, 144);
@@ -204,6 +210,8 @@ internal sealed class MainForm : Form
         DragEnter += (_, e) => { if (e.Data?.GetDataPresent(DataFormats.FileDrop) == true) e.Effect = DragDropEffects.Copy; };
         DragDrop += (_, e) => { if (e.Data?.GetData(DataFormats.FileDrop) is string[] files) AddFiles(files); };
         transcript.Resize += (_, _) => ResizeMessages();
+        transcript.Scroll += (_, _) => transcriptFollowTail = IsTranscriptNearBottom();
+        transcript.MouseWheel += (_, e) => BeginInvoke(() => transcriptFollowTail = e.Delta < 0 ? IsTranscriptNearBottom() : false);
     }
 
     private void PopulateSettings()
@@ -332,7 +340,13 @@ internal sealed class MainForm : Form
         CompleteActivitySegment();
         streamingMessage = CreateMessageBox("", false);
         lastResponseSegment = streamingMessage;
-        transcript.Controls.Add(WrapMessage("PI", streamingMessage, false, copyResponse: true));
+        var host = WrapMessage("PI", streamingMessage, false);
+        transcript.Controls.Add(host);
+        if (streamingMessage.Parent is RoundedPanel bubble)
+        {
+            streamingCursor = new Label { Text = "▌", AutoSize = true, Font = new Font("Segoe UI Semibold", 10F), ForeColor = Theme.Accent, BackColor = bubble.BackColor, Tag = "streaming-cursor" };
+            bubble.Controls.Add(streamingCursor); streamPulseTimer.Start();
+        }
         ScrollToBottom();
     }
 
@@ -370,23 +384,27 @@ internal sealed class MainForm : Form
         if (!streamFlushTimer.Enabled) streamFlushTimer.Start();
     }
 
-    private void FlushStreamText()
+    private void FlushStreamText(bool flushAll = false)
     {
         if (pendingStreamText.Length == 0) { streamFlushTimer.Stop(); return; }
         if (streamingMessage is null) { pendingStreamText.Clear(); streamFlushTimer.Stop(); return; }
         var keepAtBottom = IsTranscriptNearBottom();
-        var text = pendingStreamText.ToString(); pendingStreamText.Clear();
+        var count = flushAll ? pendingStreamText.Length : Math.Min(140, pendingStreamText.Length);
+        var text = pendingStreamText.ToString(0, count); pendingStreamText.Remove(0, count);
         streamingMessage.AppendStreamingMarkdown(text);
         ResizeMessageBox(streamingMessage);
+        if (pendingStreamText.Length == 0) streamFlushTimer.Stop();
         if (keepAtBottom) ScrollToBottom();
     }
 
     private void FinalizeStreamingTextSegment()
     {
-        FlushStreamText();
+        FlushStreamText(true);
         if (streamingMessage is null) return;
         if (streamingMessage.MarkdownLength == 0) streamingMessage.SetMarkdown("Done.");
         else streamingMessage.FinalizeMarkdown();
+        if (streamingCursor is not null) { streamingCursor.Dispose(); streamingCursor = null; streamPulseTimer.Stop(); }
+        AddCopyButton(streamingMessage);
         ResizeMessageBox(streamingMessage); streamingMessage = null; pendingStreamText.Clear(); streamFlushTimer.Stop();
     }
 
@@ -408,6 +426,7 @@ internal sealed class MainForm : Form
 
     private void AddUserMessage(string text, List<Attachment> files)
     {
+        transcriptFollowTail = true;
         var details = files.Count == 0 ? "" : "\n\n" + string.Join("  •  ", files.Select(f => f.Name));
         transcript.Controls.Add(WrapMessage("YOU", CreateMessageBox(text + details, true), true)); ScrollToBottom();
     }
@@ -454,12 +473,15 @@ internal sealed class MainForm : Form
             bubble.Controls.Add(metadata);
         }
         if (showResponseMetadata || copyResponse)
-        {
-            var copy = new ModernButton { Text = "Copy", Size = new Size(44, 22), Font = new Font("Segoe UI", 8F), Radius = 6, DrawBorder = false, Tag = "response-copy" };
-            copy.Click += (_, _) => CopyResponseText(box, copy);
-            bubble.Controls.Add(copy);
-        }
+            AddCopyButton(box);
         host.Controls.Add(bubble); ApplyThemeTree(host); ResizeMessageBox(box); return host;
+    }
+
+    private static void AddCopyButton(RichTextBox box)
+    {
+        if (box.Parent is not RoundedPanel bubble || bubble.Controls.OfType<ModernButton>().Any(button => Equals(button.Tag, "response-copy"))) return;
+        var copy = new ModernButton { Text = "Copy", Size = new Size(44, 22), Font = new Font("Segoe UI", 8F), Radius = 6, DrawBorder = false, Tag = "response-copy" };
+        copy.Click += (_, _) => CopyResponseText(box, copy); bubble.Controls.Add(copy); ApplyThemeTree(copy);
     }
 
     private static void AddResponseMetadata(RichTextBox box, string text)
@@ -497,10 +519,18 @@ internal sealed class MainForm : Form
 
     private static void ResizeMessageBox(RichTextBox box)
     {
-        var measured = TextRenderer.MeasureText(box.Text + "\n", box.Font, new Size(Math.Max(200, box.Width - 12), int.MaxValue), TextFormatFlags.WordBreak);
-        box.Height = Math.Min(20_000, Math.Max(38, measured.Height + 10));
+        var lineHeight = TextRenderer.MeasureText("Ag", box.Font).Height;
+        var contentBottom = box.TextLength == 0 ? 0 : box.GetPositionFromCharIndex(Math.Max(0, box.TextLength - 1)).Y + lineHeight;
+        box.Height = Math.Min(20_000, Math.Max(26, contentBottom + 5));
         if (box.Parent is RoundedPanel bubble)
         {
+            var pulse = bubble.Controls.OfType<Label>().FirstOrDefault(label => Equals(label.Tag, "streaming-cursor"));
+            if (pulse is not null)
+            {
+                var end = box.GetPositionFromCharIndex(box.TextLength);
+                pulse.Location = new Point(Math.Min(bubble.Width - pulse.Width - 12, box.Left + end.X + 1), box.Top + end.Y);
+                pulse.BringToFront();
+            }
             var activity = bubble.Controls.OfType<ActivityTimelinePanel>().FirstOrDefault();
             var cursor = box.Bottom + 5;
             if (activity is { Visible: true }) { activity.Location = new Point(12, cursor); activity.Width = bubble.Width - 24; cursor += activity.Height + 5; }
@@ -520,9 +550,10 @@ internal sealed class MainForm : Form
 
     private async Task NewChatAsync()
     {
+        transcriptFollowTail = true;
         try { if (rpc.IsRunning) await rpc.SendAsync(new { type = "new_session" }); currentSessionPath = await GetCurrentSessionPathAsync(); }
         catch { currentSessionPath = null; }
-        streamFlushTimer.Stop(); pendingStreamText.Clear(); transcript.Controls.Clear(); streamingMessage = null; streamingActivity = null; streamingActivityHost = null; lastResponseSegment = null;
+        streamFlushTimer.Stop(); streamPulseTimer.Stop(); pendingStreamText.Clear(); transcript.Controls.Clear(); streamingMessage = null; streamingCursor = null; streamingActivity = null; streamingActivityHost = null; lastResponseSegment = null;
         ResetChatUsage(); AddWelcome(); RefreshRecentProjects();
     }
 
@@ -542,6 +573,7 @@ internal sealed class MainForm : Form
 
     private async Task SwitchProjectAsync(string path)
     {
+        transcriptFollowTail = true;
         currentSessionPath = null; settings.RememberProject(path); UpdateProjectLabel(); RefreshRecentProjects(); transcript.Controls.Clear(); ResetChatUsage(); AddWelcome();
         if (terminalPanel.Visible) terminalPanel.Start(path);
         await ConnectAsync();
@@ -584,6 +616,7 @@ internal sealed class MainForm : Form
 
     private async Task OpenSessionAsync(SavedSession session)
     {
+        transcriptFollowTail = true;
         updatingSelections = true;
         try
         {
@@ -605,6 +638,7 @@ internal sealed class MainForm : Form
 
     private async Task LoadSessionMessagesAsync()
     {
+        transcriptFollowTail = true;
         var response = await rpc.SendAsync(new { type = "get_messages" }, TimeSpan.FromSeconds(30));
         if (!response.TryGetProperty("data", out var data) || !data.TryGetProperty("messages", out var messages) || messages.ValueKind != JsonValueKind.Array) return;
         transcript.SuspendLayout();
@@ -797,7 +831,7 @@ internal sealed class MainForm : Form
 
     private void ScrollToBottom()
     {
-        if (!IsHandleCreated || scrollPending) return;
+        if (!transcriptFollowTail || !IsHandleCreated || scrollPending) return;
         scrollPending = true;
         BeginInvoke(() =>
         {
@@ -841,6 +875,7 @@ internal sealed class MainForm : Form
         control.BackColor = tag switch
         {
             "sidebar" or "sidebar-selected" => Theme.Sidebar, "surface" or "composer" => Theme.Surface, "terminal" => Theme.Terminal, "terminal-input" => Theme.TerminalInput,
+            "activity-running" => Theme.ActivityRunning, "activity-complete" => Theme.ActivityComplete, "activity-error" => Theme.ActivityError,
             "bubble-assistant" => Theme.AssistantBubble, "bubble-user" => Theme.UserBubble, "accent" => Theme.Accent,
             "transparent-muted" => Color.Transparent,
             "muted" or "response-meta" or "text" => control.Parent?.BackColor ?? Theme.Background,
@@ -848,7 +883,7 @@ internal sealed class MainForm : Form
         };
         if (control is ModernButton button)
         {
-            button.NormalColor = tag == "accent" ? Theme.Accent : tag == "sidebar-selected" ? Theme.SurfaceHover : tag == "delete-chat" ? Theme.SurfaceHover : tag == "sidebar" ? Theme.Sidebar : Theme.Surface;
+            button.NormalColor = tag == "accent" ? Theme.Accent : tag == "activity-running" ? Theme.ActivityRunning : tag == "activity-complete" ? Theme.ActivityComplete : tag == "activity-error" ? Theme.ActivityError : tag == "sidebar-selected" ? Theme.SurfaceHover : tag == "delete-chat" ? Theme.SurfaceHover : tag == "sidebar" ? Theme.Sidebar : Theme.Surface;
             button.HoverColor = tag == "accent" ? Theme.AccentHover : tag == "delete-chat" ? Color.FromArgb(115, 52, 57) : Theme.SurfaceHover; button.BorderColor = tag is "sidebar" or "sidebar-selected" or "delete-chat" ? Theme.Sidebar : Theme.Border;
             button.ForeColor = tag == "accent" ? Color.White : tag == "tool-error" ? Color.FromArgb(225, 92, 92) : tag == "muted" ? Theme.Muted : Theme.Text; button.Invalidate();
         }

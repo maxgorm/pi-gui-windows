@@ -14,6 +14,7 @@ internal sealed class ActivityTimelinePanel : Panel
     private bool complete;
     private bool expanded;
     private bool hasThinking;
+    private bool hasError;
     private readonly System.Windows.Forms.Timer animation = new() { Interval = 180 };
     private readonly string[] frames = { "◐", "◓", "◑", "◒" };
     private string activeText = "Thinking";
@@ -33,6 +34,7 @@ internal sealed class ActivityTimelinePanel : Panel
 
     public void ShowThinking()
     {
+        SetHeaderState("activity-running");
         SetActive("Thinking");
         if (hasThinking) return;
         hasThinking = true;
@@ -41,6 +43,7 @@ internal sealed class ActivityTimelinePanel : Panel
 
     public void StartTool(string id, string tool, string detail)
     {
+        SetHeaderState("activity-running");
         var action = FriendlyAction(tool);
         var suffix = string.IsNullOrWhiteSpace(detail) ? "" : $" — {detail}";
         SetActive(action);
@@ -49,6 +52,7 @@ internal sealed class ActivityTimelinePanel : Panel
 
     public void FinishTool(string id, string tool, bool failed, string detail)
     {
+        hasError |= failed;
         var entry = entries.LastOrDefault(item => item.Id == id);
         var action = FriendlyAction(tool);
         var suffix = string.IsNullOrWhiteSpace(detail) ? "" : $" — {detail}";
@@ -60,12 +64,14 @@ internal sealed class ActivityTimelinePanel : Panel
             entry.Label.ForeColor = failed ? Color.FromArgb(225, 92, 92) : Theme.Muted;
         }
         SetActive(failed ? $"{action} failed" : $"{action} finished");
+        SetHeaderState(failed ? "activity-error" : "activity-complete");
     }
 
     public void Complete()
     {
         complete = true;
         animation.Stop();
+        SetHeaderState(hasError ? "activity-error" : "activity-complete");
         if (entries.Count == 0)
         {
             Visible = false; Height = 0; TimelineHeightChanged?.Invoke(); return;
@@ -77,6 +83,18 @@ internal sealed class ActivityTimelinePanel : Panel
     }
 
     private void SetActive(string text) { activeText = text; if (!animation.Enabled) animation.Start(); }
+
+    private void SetHeaderState(string state)
+    {
+        header.Tag = state;
+        header.NormalColor = state switch
+        {
+            "activity-running" => Theme.ActivityRunning,
+            "activity-error" => Theme.ActivityError,
+            _ => Theme.ActivityComplete
+        };
+        header.HoverColor = Theme.SurfaceHover; header.BorderColor = Color.Transparent; header.DrawBorder = false; header.Invalidate();
+    }
 
     private void AddEntry(string id, string text)
     {

@@ -123,6 +123,8 @@ internal class RoundedPanel : Panel
 internal class ModernButton : Button
 {
     private bool hovering;
+    private float hoverProgress;
+    private readonly System.Windows.Forms.Timer hoverAnimation = new() { Interval = 15 };
     public int Radius { get; set; } = 9;
     public Color NormalColor { get; set; } = Theme.Surface;
     public Color HoverColor { get; set; } = Theme.SurfaceHover;
@@ -133,17 +135,23 @@ internal class ModernButton : Button
     {
         FlatStyle = FlatStyle.Flat; FlatAppearance.BorderSize = 0; UseVisualStyleBackColor = false;
         Cursor = Cursors.Hand; SetStyle(ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer, true);
+        hoverAnimation.Tick += (_, _) =>
+        {
+            var target = hovering ? 1F : 0F; hoverProgress += (target - hoverProgress) * 0.28F;
+            if (Math.Abs(target - hoverProgress) < 0.02F) { hoverProgress = target; hoverAnimation.Stop(); }
+            Invalidate();
+        };
     }
 
-    protected override void OnMouseEnter(EventArgs e) { hovering = true; Invalidate(); base.OnMouseEnter(e); }
-    protected override void OnMouseLeave(EventArgs e) { hovering = false; Invalidate(); base.OnMouseLeave(e); }
+    protected override void OnMouseEnter(EventArgs e) { hovering = true; hoverAnimation.Start(); base.OnMouseEnter(e); }
+    protected override void OnMouseLeave(EventArgs e) { hovering = false; hoverAnimation.Start(); base.OnMouseLeave(e); }
     protected override void OnPaint(PaintEventArgs e)
     {
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
         e.Graphics.Clear(Parent?.BackColor ?? Theme.Background);
         var rect = new Rectangle(0, 0, Width - 1, Height - 1);
         using var path = Shape.Rounded(rect, Radius);
-        using var brush = new SolidBrush(hovering ? HoverColor : NormalColor);
+        using var brush = new SolidBrush(Blend(NormalColor, HoverColor, hoverProgress));
         e.Graphics.FillPath(brush, path);
         if (DrawBorder) { using var pen = new Pen(BorderColor); e.Graphics.DrawPath(pen, path); }
         var textRect = new Rectangle(rect.X + Padding.Left, rect.Y + Padding.Top,
@@ -156,6 +164,12 @@ internal class ModernButton : Button
         };
         TextRenderer.DrawText(e.Graphics, Text, Font, textRect, ForeColor, alignment | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
     }
+
+    private static Color Blend(Color from, Color to, float amount) => Color.FromArgb(
+        (int)(from.A + (to.A - from.A) * amount), (int)(from.R + (to.R - from.R) * amount),
+        (int)(from.G + (to.G - from.G) * amount), (int)(from.B + (to.B - from.B) * amount));
+
+    protected override void Dispose(bool disposing) { if (disposing) hoverAnimation.Dispose(); base.Dispose(disposing); }
 }
 
 internal class ModernComboBox : ComboBox

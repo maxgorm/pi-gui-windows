@@ -10,6 +10,8 @@ internal static class Program
             return RuntimeSelfTest.RunAsync().GetAwaiter().GetResult();
         if (args.Contains("--ui-stress", StringComparer.OrdinalIgnoreCase))
             return UiInteractionSelfTest.Run();
+        if (args.Contains("--change-tracker-test", StringComparer.OrdinalIgnoreCase))
+            return ChangeTrackerSelfTest.RunAsync().GetAwaiter().GetResult();
         if (args.Contains("--approval-preview", StringComparer.OrdinalIgnoreCase))
         {
             Theme.SetMode("dark");

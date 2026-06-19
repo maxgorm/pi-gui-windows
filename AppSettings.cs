@@ -10,6 +10,7 @@ internal sealed class AppSettings
     public string Effort { get; set; } = "medium";
     public string ApprovalMode { get; set; } = "ask";
     public string ThemeMode { get; set; } = "dark";
+    public bool SidebarCollapsed { get; set; }
     public List<string> RecentProjects { get; set; } = new();
     public Dictionary<string, ProviderPreference> ProviderPreferences { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 

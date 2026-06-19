@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 
@@ -43,10 +44,16 @@ internal sealed class MainForm : Form
     private readonly ModernButton stopButton = new() { Tag = "surface" };
     private readonly ModernButton themeButton = new() { Tag = "sidebar" };
     private readonly RoundedPanel composerCard = new() { Tag = "surface" };
+    private readonly TableLayoutPanel rootLayout = new() { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Tag = "background" };
+    private readonly Panel sidebarPanel = new() { Dock = DockStyle.Fill, Padding = new Padding(14), Tag = "sidebar" };
+    private readonly Panel mainHost = new() { Dock = DockStyle.Fill, Tag = "background" };
     private readonly TableLayoutPanel mainLayout = new() { Dock = DockStyle.Fill, RowCount = 4, ColumnCount = 1, Tag = "background" };
     private readonly AccountsPanel accountsPanel = new() { Visible = false };
+    private readonly DiffReviewPanel diffReviewPanel = new() { Visible = false };
     private readonly TerminalPanel terminalPanel = new() { Visible = false };
     private readonly ModernButton terminalButton = new() { Tag = "surface" };
+    private readonly ModernButton vscodeButton = new() { Tag = "surface" };
+    private readonly ModernButton sidebarToggleButton = new() { Tag = "surface" };
     private ModernButton? attachButton;
     private readonly Label statusLabel = new() { Tag = "muted" };
     private readonly Label authLabel = new() { Tag = "muted" };
@@ -57,6 +64,7 @@ internal sealed class MainForm : Form
     private readonly StringBuilder pendingStreamText = new();
     private readonly System.Windows.Forms.Timer streamFlushTimer = new() { Interval = 32 };
     private readonly System.Windows.Forms.Timer streamPulseTimer = new() { Interval = 380 };
+    private readonly System.Windows.Forms.Timer sidebarAnimation = new() { Interval = 15 };
     private MarkdownRichTextBox? streamingMessage;
     private ActivityTimelinePanel? streamingActivity;
     private Panel? streamingActivityHost;
@@ -72,12 +80,15 @@ internal sealed class MainForm : Form
     private bool scrollPending;
     private bool transcriptFollowTail = true;
     private string? currentSessionPath;
+    private float sidebarTargetWidth;
+    private WorkspaceChangeTracker? activeChangeTracker;
 
     public MainForm()
     {
         responseUsage = new ResponseUsageTracker(FriendlyModelName);
         streamFlushTimer.Tick += (_, _) => FlushStreamText();
         streamPulseTimer.Tick += (_, _) => { if (streamingCursor is { IsDisposed: false } cursor) { cursor.ForeColor = cursor.ForeColor == Theme.Accent ? Theme.Muted : Theme.Accent; cursor.Invalidate(); } };
+        sidebarAnimation.Tick += (_, _) => AnimateSidebar();
         Theme.SetMode(settings.ThemeMode);
         Text = "Pi GUI for Windows";
         MinimumSize = new Size(1020, 680);
@@ -85,65 +96,73 @@ internal sealed class MainForm : Form
         StartPosition = FormStartPosition.CenterScreen;
         Font = Theme.Ui;
         AllowDrop = true;
+        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
         BuildLayout();
         WireEvents();
         PopulateSettings();
         ApplyThemeTree(this);
         HandleCreated += (_, _) => NativeTheme.Apply(this);
         Shown += (_, _) => RunUiActionAsync(async () => { PositionComposerControls(); await ConnectAsync(); }, "start Pi");
-        FormClosing += (_, _) => { streamFlushTimer.Stop(); streamFlushTimer.Dispose(); streamPulseTimer.Stop(); streamPulseTimer.Dispose(); terminalPanel.Stop(); settings.Save(); rpc.DisposeAsync().AsTask().GetAwaiter().GetResult(); };
+        FormClosing += (_, _) => { streamFlushTimer.Stop(); streamFlushTimer.Dispose(); streamPulseTimer.Stop(); streamPulseTimer.Dispose(); sidebarAnimation.Stop(); sidebarAnimation.Dispose(); activeChangeTracker?.DisposeAsync().AsTask().GetAwaiter().GetResult(); terminalPanel.Stop(); settings.Save(); rpc.DisposeAsync().AsTask().GetAwaiter().GetResult(); };
     }
 
     private void BuildLayout()
     {
-        var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Tag = "background" };
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 250));
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        Controls.Add(root);
+        sidebarTargetWidth = settings.SidebarCollapsed ? 0 : 250;
+        rootLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, sidebarTargetWidth));
+        rootLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        Controls.Add(rootLayout);
 
-        var sidebar = new Panel { Dock = DockStyle.Fill, Padding = new Padding(14), Tag = "sidebar" };
-        root.Controls.Add(sidebar, 0, 0);
-        sidebar.Controls.Add(new Label { Text = "π  Pi for Windows", AutoSize = true, Font = new Font("Segoe UI Semibold", 13), Location = new Point(19, 20), Tag = "text" });
+        rootLayout.Controls.Add(sidebarPanel, 0, 0);
+        sidebarPanel.Controls.Add(new Label { Text = "π  Pi for Windows", AutoSize = true, Font = new Font("Segoe UI Semibold", 13), Location = new Point(19, 20), Tag = "text" });
         themeButton.Text = Theme.IsDark ? "☀" : "☾"; themeButton.Font = new Font("Segoe UI Symbol", 12); themeButton.Location = new Point(201, 13); themeButton.Size = new Size(34, 34); themeButton.DrawBorder = false;
-        themeButton.Click += (_, _) => ToggleTheme(); sidebar.Controls.Add(themeButton);
+        themeButton.Click += (_, _) => ToggleTheme(); sidebarPanel.Controls.Add(themeButton);
 
         var newChat = MakeButton("＋   New thread", 42, "sidebar");
         newChat.Location = new Point(14, 66); newChat.Width = 220; newChat.TextAlign = ContentAlignment.MiddleLeft; newChat.Padding = new Padding(12, 0, 0, 0);
-        newChat.Click += (_, _) => RunUiActionAsync(NewChatAsync, "start a new thread"); sidebar.Controls.Add(newChat);
+        newChat.Click += (_, _) => RunUiActionAsync(NewChatAsync, "start a new thread"); sidebarPanel.Controls.Add(newChat);
         var newProject = MakeButton("✦   Work in a new project", 38, "sidebar");
         newProject.Location = new Point(14, 114); newProject.Width = 220; newProject.TextAlign = ContentAlignment.MiddleLeft; newProject.Padding = new Padding(12, 0, 0, 0);
-        newProject.Click += (_, _) => RunUiAction(CreateNewProject, "create a project"); sidebar.Controls.Add(newProject);
-        sidebar.Controls.Add(new Label { Text = "WORKSPACES", AutoSize = true, Font = new Font("Segoe UI Semibold", 8), Location = new Point(20, 174), Tag = "muted" });
+        newProject.Click += (_, _) => RunUiAction(CreateNewProject, "create a project"); sidebarPanel.Controls.Add(newProject);
+        sidebarPanel.Controls.Add(new Label { Text = "WORKSPACES", AutoSize = true, Font = new Font("Segoe UI Semibold", 8), Location = new Point(20, 174), Tag = "muted" });
         recentProjects.Location = new Point(10, 197); recentProjects.Width = 228; recentProjects.Height = 370; recentProjects.FlowDirection = FlowDirection.TopDown; recentProjects.WrapContents = false;
-        sidebar.Controls.Add(recentProjects);
+        sidebarPanel.Controls.Add(recentProjects);
 
         var accounts = MakeButton("⚙   Accounts + settings", 40, "sidebar");
         accounts.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom; accounts.Width = 220; accounts.TextAlign = ContentAlignment.MiddleLeft; accounts.Padding = new Padding(11, 0, 0, 0);
-        accounts.Click += (_, _) => RunUiAction(OpenAccounts, "open account settings"); sidebar.Controls.Add(accounts);
-        authLabel.AutoSize = true; authLabel.Font = Theme.Small; sidebar.Controls.Add(authLabel);
+        accounts.Click += (_, _) => RunUiAction(OpenAccounts, "open account settings"); sidebarPanel.Controls.Add(accounts);
+        authLabel.AutoSize = true; authLabel.Font = Theme.Small; sidebarPanel.Controls.Add(authLabel);
         void PositionSidebarFooter()
         {
-            accounts.Top = sidebar.ClientSize.Height - 58; authLabel.Location = new Point(20, accounts.Top - 30);
+            accounts.Top = sidebarPanel.ClientSize.Height - 58; authLabel.Location = new Point(20, accounts.Top - 30);
             recentProjects.Height = Math.Max(100, authLabel.Top - recentProjects.Top - 12);
         }
-        sidebar.Resize += (_, _) => PositionSidebarFooter(); PositionSidebarFooter();
+        sidebarPanel.Resize += (_, _) => PositionSidebarFooter(); PositionSidebarFooter();
 
         mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 66)); mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 184)); mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));
-        var mainHost = new Panel { Dock = DockStyle.Fill, Tag = "background" };
-        root.Controls.Add(mainHost, 1, 0); mainHost.Controls.Add(mainLayout); mainHost.Controls.Add(accountsPanel); accountsPanel.BringToFront();
+        rootLayout.Controls.Add(mainHost, 1, 0); mainHost.Controls.Add(mainLayout); mainHost.Controls.Add(accountsPanel); mainHost.Controls.Add(diffReviewPanel); mainLayout.BringToFront();
         accountsPanel.CloseRequested += CloseAccounts;
         accountsPanel.AccountsChanged += () => RunUiActionAsync(async () => { RefreshAuthStatus(); ResetChatUsage(); await ConnectAsync(); }, "refresh accounts");
+        diffReviewPanel.CloseRequested += CloseDiffReview;
 
         var toolbar = new Panel { Dock = DockStyle.Fill, Padding = new Padding(24, 13, 24, 8), Tag = "background" };
         mainLayout.Controls.Add(toolbar, 0, 0);
-        projectButton.TextAlign = ContentAlignment.MiddleLeft; projectButton.AutoEllipsis = true; projectButton.Padding = new Padding(12, 0, 0, 0); projectButton.Location = new Point(24, 13); projectButton.Size = new Size(305, 40);
+        sidebarToggleButton.Text = "☰"; sidebarToggleButton.Font = new Font("Segoe UI Symbol", 11F); sidebarToggleButton.Location = new Point(12, 15); sidebarToggleButton.Size = new Size(36, 36); sidebarToggleButton.DrawBorder = false;
+        sidebarToggleButton.Click += (_, _) => ToggleSidebar(); toolbar.Controls.Add(sidebarToggleButton);
+        projectButton.TextAlign = ContentAlignment.MiddleLeft; projectButton.AutoEllipsis = true; projectButton.Padding = new Padding(12, 0, 0, 0); projectButton.Location = new Point(56, 13); projectButton.Size = new Size(305, 40);
         toolbar.Controls.Add(projectButton);
-        statusLabel.AutoSize = true; statusLabel.Location = new Point(348, 25); toolbar.Controls.Add(statusLabel);
+        statusLabel.AutoSize = true; statusLabel.Location = new Point(380, 25); toolbar.Controls.Add(statusLabel);
         terminalButton.Text = ">_  Terminal"; terminalButton.Size = new Size(112, 36); terminalButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
         terminalButton.Click += (_, _) => ToggleTerminal(); toolbar.Controls.Add(terminalButton);
-        void PositionTerminalButton() => terminalButton.Location = new Point(Math.Max(360, toolbar.ClientSize.Width - 138), 15);
-        toolbar.Resize += (_, _) => PositionTerminalButton(); toolbar.Layout += (_, _) => PositionTerminalButton(); PositionTerminalButton();
+        vscodeButton.Text = "Open in VS Code"; vscodeButton.Size = new Size(160, 36); vscodeButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        vscodeButton.Click += (_, _) => RunUiAction(OpenInVsCode, "open VS Code"); toolbar.Controls.Add(vscodeButton);
+        void PositionToolbarActions()
+        {
+            terminalButton.Location = new Point(Math.Max(520, toolbar.ClientSize.Width - 138), 15);
+            vscodeButton.Location = new Point(Math.Max(440, toolbar.ClientSize.Width - 316), 15);
+        }
+        toolbar.Resize += (_, _) => PositionToolbarActions(); toolbar.Layout += (_, _) => PositionToolbarActions(); PositionToolbarActions();
 
         transcript.Dock = DockStyle.Fill; transcript.AutoScroll = true; transcript.FlowDirection = FlowDirection.TopDown; transcript.WrapContents = false; transcript.Padding = new Padding(56, 24, 56, 48);
         mainLayout.Controls.Add(transcript, 0, 1);
@@ -272,11 +291,16 @@ internal sealed class MainForm : Form
         try
         {
             if (!rpc.IsRunning) throw new InvalidOperationException("Pi is reconnecting. Please send the message again in a moment.");
+            activeChangeTracker ??= await WorkspaceChangeTracker.StartAsync(settings.ProjectPath);
             await rpc.PromptAsync(text, outgoing);
             AddUserMessage(text.Length == 0 ? "[Attachments]" : text, outgoing);
             composer.Clear(); attachments.Clear(); RefreshAttachments();
         }
-        catch (Exception ex) { AddSystemMessage(ex.Message, true); SetBusy(false); }
+        catch (Exception ex)
+        {
+            if (activeChangeTracker is not null) { await activeChangeTracker.DisposeAsync(); activeChangeTracker = null; }
+            AddSystemMessage(ex.Message, true); SetBusy(false);
+        }
         finally { connectionLock.Release(); }
     }
 
@@ -290,6 +314,7 @@ internal sealed class MainForm : Form
             case "agent_end":
                 SetBusy(false); FinishStreamingMessage();
                 RunUiActionAsync(RefreshSessionStatsAsync, "refresh usage");
+                RunUiActionAsync(FinishTurnChangesAsync, "summarize changes");
                 RefreshRecentProjects();
                 break;
             case "message_end":
@@ -421,6 +446,25 @@ internal sealed class MainForm : Form
         sessionTotalCredits += responseUsage.EstimatedCopilotCredits;
         lastResponseSegment = null; pendingStreamText.Clear(); streamFlushTimer.Stop();
         statusLabel.Text = "Ready"; UpdateUsageFooter(); ScrollToBottom();
+    }
+
+    private async Task FinishTurnChangesAsync()
+    {
+        var tracker = activeChangeTracker; activeChangeTracker = null;
+        if (tracker is null) return;
+        var changes = await tracker.FinishAsync();
+        if (changes is null || changes.IsEmpty) return;
+        var panel = new ChangeSummaryPanel(changes) { Width = Math.Min(760, Math.Max(480, transcript.ClientSize.Width - 235)) };
+        panel.ReviewRequested += item => OpenDiffReview(item.Changes);
+        panel.UndoRequested += item => RunUiActionAsync(() => UndoTurnChangesAsync(item), "undo changes");
+        transcript.Controls.Add(panel); ApplyThemeTree(panel); ScrollToBottom();
+    }
+
+    private async Task UndoTurnChangesAsync(ChangeSummaryPanel panel)
+    {
+        panel.SetUndoBusy(true);
+        try { await panel.Changes.UndoAsync(); panel.MarkUndone(); }
+        catch { panel.SetUndoBusy(false); throw; }
     }
     private void AddWelcome() => AddSystemMessage("What would you like to build?\n\nPi can read and edit files, run commands, and work across the selected project. Paste an image, drop files here, or attach them below.", false);
 
@@ -807,6 +851,45 @@ internal sealed class MainForm : Form
 
     private void OpenAccounts() { accountsPanel.RefreshStatuses(); accountsPanel.Visible = true; accountsPanel.BringToFront(); ApplyThemeTree(accountsPanel); }
     private void CloseAccounts() { accountsPanel.Visible = false; mainLayout.BringToFront(); RefreshAuthStatus(); }
+    private void OpenDiffReview(TurnChanges changes) { diffReviewPanel.SetChanges(changes); diffReviewPanel.Visible = true; diffReviewPanel.BringToFront(); ApplyThemeTree(diffReviewPanel); }
+    private void CloseDiffReview() { diffReviewPanel.Visible = false; mainLayout.BringToFront(); }
+
+    private void ToggleSidebar()
+    {
+        sidebarTargetWidth = rootLayout.ColumnStyles[0].Width > 125 ? 0 : 250;
+        if (sidebarTargetWidth > 0) sidebarPanel.Visible = true;
+        sidebarAnimation.Start();
+    }
+
+    private void AnimateSidebar()
+    {
+        var current = rootLayout.ColumnStyles[0].Width;
+        var next = current + (sidebarTargetWidth - current) * 0.24F;
+        if (Math.Abs(sidebarTargetWidth - next) < 1F)
+        {
+            next = sidebarTargetWidth; sidebarAnimation.Stop(); sidebarPanel.Visible = next > 0;
+            settings.SidebarCollapsed = next == 0; settings.Save();
+        }
+        rootLayout.ColumnStyles[0].Width = next; rootLayout.PerformLayout(); mainLayout.PerformLayout();
+        rootLayout.Invalidate(true); mainHost.Invalidate(true);
+        if (!sidebarAnimation.Enabled) Refresh();
+    }
+
+    private void OpenInVsCode()
+    {
+        var candidates = new[]
+        {
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "Microsoft VS Code", "Code.exe"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Microsoft VS Code", "Code.exe"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Microsoft VS Code", "Code.exe")
+        };
+        var executable = candidates.FirstOrDefault(File.Exists);
+        if (executable is not null)
+        {
+            var psi = new ProcessStartInfo { FileName = executable, UseShellExecute = false }; psi.ArgumentList.Add("-r"); psi.ArgumentList.Add(settings.ProjectPath); Process.Start(psi); return;
+        }
+        Process.Start(new ProcessStartInfo("code", $"-r \"{settings.ProjectPath}\"") { UseShellExecute = true });
+    }
     private void ToggleTerminal()
     {
         if (terminalPanel.Visible) { CloseTerminal(); return; }
@@ -871,14 +954,15 @@ internal sealed class MainForm : Form
     private static void ApplyThemeTree(Control control)
     {
         var tag = control.Tag?.ToString();
-        control.ForeColor = tag is "muted" or "response-meta" or "transparent-muted" ? Theme.Muted : Theme.Text;
+        control.ForeColor = tag == "change-count" ? Theme.Success : tag is "muted" or "response-meta" or "transparent-muted" ? Theme.Muted : Theme.Text;
         control.BackColor = tag switch
         {
             "sidebar" or "sidebar-selected" => Theme.Sidebar, "surface" or "composer" => Theme.Surface, "terminal" => Theme.Terminal, "terminal-input" => Theme.TerminalInput,
             "activity-running" => Theme.ActivityRunning, "activity-complete" => Theme.ActivityComplete, "activity-error" => Theme.ActivityError,
             "bubble-assistant" => Theme.AssistantBubble, "bubble-user" => Theme.UserBubble, "accent" => Theme.Accent,
             "transparent-muted" => Color.Transparent,
-            "muted" or "response-meta" or "text" => control.Parent?.BackColor ?? Theme.Background,
+            "muted" or "response-meta" or "text" or "change-count" => control.Parent?.BackColor ?? Theme.Background,
+            "diff" => Theme.Background,
             _ => control is Label ? control.Parent?.BackColor ?? Theme.Background : Theme.Background
         };
         if (control is ModernButton button)

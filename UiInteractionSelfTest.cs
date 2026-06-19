@@ -40,6 +40,15 @@ internal static class UiInteractionSelfTest
             throw new InvalidOperationException("Activity timeline did not expand within its height cap.");
         activityHeader.PerformClick();
         if (activity.Height != 30) throw new InvalidOperationException("Activity timeline did not collapse.");
+        var sampleChanges = new TurnChanges
+        {
+            ProjectPath = Path.GetTempPath(),
+            Patch = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n",
+            Files = new[] { new ChangedFile("a.txt", 1, 1) }
+        };
+        using var changeSummary = new ChangeSummaryPanel(sampleChanges);
+        using var diffReview = new DiffReviewPanel(); diffReview.SetChanges(sampleChanges);
+        if (changeSummary.Height < 80 || diffReview.Controls.Count == 0) throw new InvalidOperationException("Change review controls did not initialize.");
         var usage = new ResponseUsageTracker(id => id);
         usage.Begin("github-copilot", "gpt-5.4");
         using (var message = JsonDocument.Parse("""{"role":"assistant","provider":"github-copilot","model":"gpt-5.4","responseModel":"gpt-5.5","usage":{"totalTokens":123,"cost":{"total":0.02}}}"""))

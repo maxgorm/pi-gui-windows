@@ -35,4 +35,7 @@ finally { $env:PATH = $originalPath }
 $uiStress = Start-Process -FilePath '.\bin\Release\net7.0-windows\PiGUI.exe' -ArgumentList '--ui-stress' -WorkingDirectory $PSScriptRoot -Wait -PassThru
 if ($uiStress.ExitCode -ne 0) { throw 'Drop-down interaction regression test failed.' }
 
-Write-Host 'Build, provider RPC, approval policy, tool execution, Node discovery, lifecycle, and UI interaction tests passed.' -ForegroundColor Green
+$changeStress = Start-Process -FilePath '.\bin\Release\net7.0-windows\PiGUI.exe' -ArgumentList '--change-tracker-test' -WorkingDirectory $PSScriptRoot -Wait -PassThru
+if ($changeStress.ExitCode -ne 0) { throw 'Per-turn change tracking or undo regression test failed.' }
+
+Write-Host 'Build, provider RPC, approval policy, tool execution, Node discovery, lifecycle, UI interaction, and change tracking tests passed.' -ForegroundColor Green
